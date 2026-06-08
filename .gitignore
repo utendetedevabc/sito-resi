@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build
+.next/
+out/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Database
+data/*.db
+data/*.db-journal
+data/*.backup
+data/*.corrupt
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp
+*.pid
+*.tmp
+*.temp
+coverage/
+
+# Secrets
+*.pem
+*.key
+
+# JSON configs only (allow package.json, tsconfig, etc.)
+# But exclude runtime/temp JSON
+*_token.json
+csrf.json
+reso_created.json
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

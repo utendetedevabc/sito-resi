@@ -1,0 +1,83 @@
+import 'dotenv/config';
+import express from 'express';
+import next from 'next';
+import cookieParser from 'cookie-parser';
+import { setupSecurityMiddleware, generateCsrfToken } from './server/security/middleware.js';
+import { authenticate } from './server/middleware/authenticate.js';
+import authRouter from './server/modules/auth.js';
+import resiRouter from './server/modules/resi.js';
+import venditoreRouter from './server/modules/venditore.js';
+import customerServiceRouter from './server/modules/customer-service.js';
+import adminRouter from './server/modules/admin.js';
+import upload, { processUpload } from './server/modules/upload.js';
+import webauthnRouter from './server/modules/webauthn.js';
+import notificationsRouter from './server/modules/notifications.js';
+import db, { close } from './server/lib/db.js';
+import logger from './server/lib/logger.js';
+
+const dev = process.env.NODE_ENV !== 'production';
+const port = parseInt(process.env.PORT) || 3002;
+const host = process.env.HOST || '0.0.0.0';
+
+const app = next({ dev, turbopack: false, webpack: true });
+const handle = app.getRequestHandler();
+
+app.prepare().then(() => {
+  const server = express();
+
+  if (process.env.TRUST_PROXY === '1') {
+    server.set('trust proxy', 1);
+  }
+
+  setupSecurityMiddleware(server);
+  server.use(express.json({ limit: '1mb' }));
+  server.use(express.urlencoded({ extended: false }));
+  server.use(cookieParser());
+
+  // API Routes
+  server.use('/api/auth', authRouter);
+  server.use('/api/auth/webauthn', webauthnRouter);
+  server.use('/api/resi', resiRouter);
+  server.use('/api/venditore', venditoreRouter);
+  server.use('/api/customer-service', customerServiceRouter);
+  server.use('/api/admin', adminRouter);
+  server.use('/api/notifications', notificationsRouter);
+  server.use('/api/upload', authenticate, upload.single('file'), processUpload, (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nessun file caricato' });
+    }
+    res.json({ success: true, filename: req.file.filename, sha256: req.file.sha256 });
+  });
+
+  // Health check
+  server.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  // Error handler
+  server.use((err, req, res, _next) => {
+    logger.error(`Unhandled error: ${err.message}`, { stack: err.stack, path: req.path });
+    if (res.headersSent) return;
+    res.status(err.status || 500).json({ error: dev ? err.message : 'Errore interno del server' });
+  });
+
+  // Next.js catch-all
+  server.use((req, res) => handle(req, res));
+
+  const httpServer = server.listen(port, host, () => {
+    logger.info(`Sito Resi in ascolto su http://${host}:${port}`);
+  });
+
+  // Graceful shutdown
+  function shutdown(signal) {
+    logger.info(`Ricevuto ${signal}, shutdown graceful...`);
+    httpServer.close(() => {
+      close();
+      logger.info('Server chiuso.');
+      process.exit(0);
+    });
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+});
