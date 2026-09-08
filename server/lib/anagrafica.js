@@ -3,7 +3,6 @@
 // Aggiornamento: settimanale (domenica 12:00, vedi server.js) + refresh forzato
 // (POST /api/admin/anagrafica/refresh). Il form resi legge solo da qui.
 import fs from 'fs';
-import path from 'path';
 import XLSX from 'xlsx';
 import db from './db.js';
 import logger from './logger.js';
@@ -28,7 +27,7 @@ function parseNomePersona(raw) {
 
 function cell(r, k) {
   const v = r[k];
-  return v != null ? String(v).replace(/ /g, ' ').trim() : '';
+  return v != null ? String(v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim() : '';
 }
 
 // Importa (o aggiorna) l'anagrafica. Non svuota la tabella se la source manca.
