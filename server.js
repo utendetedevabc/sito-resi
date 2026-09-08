@@ -9,6 +9,7 @@ import resiRouter from './server/modules/resi.js';
 import venditoreRouter from './server/modules/venditore.js';
 import customerServiceRouter from './server/modules/customer-service.js';
 import adminRouter from './server/modules/admin.js';
+import anagraficaRouter from './server/modules/anagrafica-api.js';
 import upload, { processUpload } from './server/modules/upload.js';
 import webauthnRouter from './server/modules/webauthn.js';
 import notificationsRouter from './server/modules/notifications.js';
@@ -41,6 +42,7 @@ app.prepare().then(() => {
   server.use('/api/venditore', venditoreRouter);
   server.use('/api/customer-service', customerServiceRouter);
   server.use('/api/admin', adminRouter);
+  server.use('/api/anagrafica', anagraficaRouter);
   server.use('/api/notifications', notificationsRouter);
   server.use('/api/upload', authenticate, upload.single('file'), processUpload, (req, res) => {
     if (!req.file) {
