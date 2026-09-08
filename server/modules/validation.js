@@ -20,12 +20,12 @@ const CLDM_REGEX = /^[A-Za-z0-9_\-]{2,20}$/;
 const DDT_DATA_REGEX = /^(0[1-9]|[12]\d|3[01])\/(0[1-9]|1[0-2])\/\d{4}$/;
 
 export const creaResoSchema = z.object({
-  numero_ordine: z.string().regex(ORDINE_REGEX, 'Formato ordine non valido').transform(sanitize),
+  numero_ordine: z.string().regex(ORDINE_REGEX, 'Formato ordine non valido').transform(sanitize).optional().nullable(),
   bda: z.string().regex(BDA_REGEX, 'BDA deve contenere solo numeri').optional().nullable(),
   motivo_reso: z.enum(['difettoso', 'errato', 'non_conforme', 'altro']),
   note: z.string().max(2000).transform(s => sanitize(s).substring(0, 2000)).optional(),
   // Campi per export corriere (manifest RITGIO*.xls). Tutti opzionali.
-  cldm: z.string().regex(CLDM_REGEX, 'CLDM non valido').transform(sanitize).optional().nullable(),
+  cldm: z.string().regex(CLDM_REGEX, 'CLDM non valido').transform(sanitize),
   ddt_numero: z.string().max(30).transform(sanitize).optional().nullable(),
   ddt_data: z.string().regex(DDT_DATA_REGEX, 'Data DDT deve essere GG/MM/AAAA').optional().nullable(),
   num_colli: z.number().int().min(1).max(9999).optional().nullable(),
@@ -48,12 +48,12 @@ export const creaResoSchema = z.object({
   // Corriere: uno tra GLS/NIEDDU/TRAMES/PARENA/ALTRI. Se ALTRI, corriere_nome obbligatorio.
   corriere: z.enum(['GLS', 'NIEDDU', 'TRAMES', 'PARENA', 'ALTRI']),
   corriere_nome: z.string().max(100).transform(sanitize).optional().nullable(),
-  // Punto vendita inserito manualmente (non piu' da CLDM/join).
-  pv_nome: z.string().min(1).max(255).transform(sanitize),
-  pv_indirizzo: z.string().min(1).max(255).transform(sanitize),
-  pv_citta: z.string().min(1).max(100).transform(sanitize),
-  pv_cap: z.string().min(1).max(10).transform(sanitize),
-  pv_provincia: z.string().min(1).max(50).transform(sanitize),
+  // Punto vendita: opzionali perche' il server li deriva dal cldm via anagrafica_pv.
+  pv_nome: z.string().min(1).max(255).transform(sanitize).optional().nullable(),
+  pv_indirizzo: z.string().min(1).max(255).transform(sanitize).optional().nullable(),
+  pv_citta: z.string().min(1).max(100).transform(sanitize).optional().nullable(),
+  pv_cap: z.string().min(1).max(10).transform(sanitize).optional().nullable(),
+  pv_provincia: z.string().min(1).max(50).transform(sanitize).optional().nullable(),
   pv_regione: z.string().max(50).transform(sanitize).optional().nullable(),
 }).refine(
   (d) => d.corriere !== 'ALTRI' || (typeof d.corriere_nome === 'string' && d.corriere_nome.trim().length >= 1),
