@@ -3,6 +3,7 @@ import db from '../lib/db.js';
 import logger from '../lib/logger.js';
 import { generateUUID, sha256 } from '../lib/security.js';
 import { creaResoSchema } from './validation.js';
+import { lookupPvByCldm } from '../lib/anagrafica.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
@@ -69,6 +70,20 @@ router.post('/', (req, res) => {
   // bda_autorizzazione in chiaro = numero BDA (per il manifest ritiri corriere)
   const bdaAutorizzazione = parsed.data.bda_autorizzazione || bda || null;
 
+  // F10: il client invia solo cldm; pv_* derivano dall'anagrafica (autorevole).
+  // Ignoriamo eventuali pv_* arrivati dal body (lo schema ora li accetta solo per
+  // backward compat ma non sono piu' usati come sorgente).
+  const pv = lookupPvByCldm(cldm);
+  if (!pv) {
+    return res.status(400).json({ error: 'CLDM non presente in anagrafica. Aggiornare l\'anagrafica o verificare il codice.', cldm });
+  }
+  const pvNome = pv.nome || null;
+  const pvIndirizzo = pv.indirizzo || null;
+  const pvCitta = pv.citta || null;
+  const pvCap = pv.cap || null;
+  const pvProvincia = pv.provincia || null;
+  const pvRegione = pv.regione || null;
+
   // Scadenza 30 giorni
   const scadenza = new Date();
   scadenza.setDate(scadenza.getDate() + 30);
@@ -100,7 +115,9 @@ router.post('/', (req, res) => {
     const info = stmt.run(
       uuid,
       userId,
-      numero_ordine,
+      // numero_ordine_esterno: colonna NOT NULL su DB esistenti; '' e' sicuro
+      // (gestito come "nessun ordine") e coerente con PUT. Mai undefined→NULL.
+      numero_ordine || '',
       bdaHash,
       motivo_reso,
       note || null,
@@ -120,12 +137,12 @@ router.post('/', (req, res) => {
       linee ? JSON.stringify(linee) : null,
       corriere || null,
       corriere_nome || null,
-      pv_nome || null,
-      pv_indirizzo || null,
-      pv_citta || null,
-      pv_cap || null,
-      pv_provincia || null,
-      pv_regione || null,
+      pvNome,
+      pvIndirizzo,
+      pvCitta,
+      pvCap,
+      pvProvincia,
+      pvRegione,
       numReso
     );
 
@@ -230,6 +247,27 @@ router.put('/:uuid', (req, res) => {
   const bdaHash = bda ? sha256(bda) : null;
   const bdaAutorizzazione = parsed.data.bda_autorizzazione || bda || null;
 
+  // F10: se cldm presente, pv_* derivano dall'anagrafica (autorevole); i pv_*
+  // del body sono ora opzionali e usati solo come fallback. Se la lookup
+  // fallisce (pv null) NON sovrascriviamo i pv_* esistenti: manteniamo i
+  // valori del body (che potrebbero essere undefined/null su PUT vecchi).
+  // Nota: i PUT di resi pre-F9 (senza cldm/linee/corriere) non sono supportati
+  // dal form nuovo (ResoForm manda sempre cldm+linee+corriere) — limitazione
+  // accettata da F9.
+  let pvNome = pv_nome || null, pvIndirizzo = pv_indirizzo || null, pvCitta = pv_citta || null,
+      pvCap = pv_cap || null, pvProvincia = pv_provincia || null, pvRegione = pv_regione || null;
+  if (cldm) {
+    const pv = lookupPvByCldm(cldm);
+    if (pv) {
+      pvNome = pv.nome || pvNome;
+      pvIndirizzo = pv.indirizzo || pvIndirizzo;
+      pvCitta = pv.citta || pvCitta;
+      pvCap = pv.cap || pvCap;
+      pvProvincia = pv.provincia || pvProvincia;
+      pvRegione = pv.regione || pvRegione;
+    }
+  }
+
   try {
     db.prepare(
       `UPDATE richieste_reso SET
@@ -239,7 +277,8 @@ router.put('/:uuid', (req, res) => {
        pv_nome = ?, pv_indirizzo = ?, pv_citta = ?, pv_cap = ?, pv_provincia = ?, pv_regione = ?
        WHERE uuid = ?`
     ).run(
-      numero_ordine,
+      // numero_ordine_esterno NOT NULL su DB esistenti: '' invece di undefined.
+      numero_ordine || '',
       bdaHash,
       motivo_reso,
       note || null,
@@ -252,12 +291,12 @@ router.put('/:uuid', (req, res) => {
       linee ? JSON.stringify(linee) : null,
       corriere || null,
       corriere_nome || null,
-      pv_nome || null,
-      pv_indirizzo || null,
-      pv_citta || null,
-      pv_cap || null,
-      pv_provincia || null,
-      pv_regione || null,
+      pvNome,
+      pvIndirizzo,
+      pvCitta,
+      pvCap,
+      pvProvincia,
+      pvRegione,
       uuid
     );
 
