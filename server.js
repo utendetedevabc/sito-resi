@@ -15,6 +15,7 @@ import webauthnRouter from './server/modules/webauthn.js';
 import notificationsRouter from './server/modules/notifications.js';
 import db, { close } from './server/lib/db.js';
 import logger from './server/lib/logger.js';
+import { refreshAnagrafica } from './server/lib/anagrafica.js';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT) || 3002;
@@ -70,9 +71,39 @@ app.prepare().then(() => {
     logger.info(`Sito Resi in ascolto su http://${host}:${port}`);
   });
 
+  // F10: scheduler anagrafica — refresh settimanale ogni domenica alle 12:00
+  // (locale). Env ANAGRAFICA_AUTO_WEEKLY=1 (default) per abilitare.
+  const autoWeekly = process.env.ANAGRAFICA_AUTO_WEEKLY !== '0';
+  let anagraficaTimer = null;
+  let anagraficaInterval = null;
+  function scheduleNextAnagraficaRefresh() {
+    if (!autoWeekly) return;
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(12, 0, 0, 0);
+    const dow = next.getDay(); // 0=dom
+    let daysUntilSun = (7 - dow) % 7;
+    if (daysUntilSun === 0 && now.getTime() >= next.getTime()) daysUntilSun = 7;
+    next.setDate(next.getDate() + daysUntilSun);
+    const ms = next.getTime() - now.getTime();
+    logger.info(`Prossimo refresh anagrafica: ${next.toLocaleString('it-IT')} (tra ${Math.round(ms / 3600000)}h)`);
+    clearTimeout(anagraficaTimer);
+    clearInterval(anagraficaInterval);
+    anagraficaTimer = setTimeout(() => {
+      try { refreshAnagrafica(); } catch (e) { logger.error(`Refresh anagrafica schedulato fallito: ${e.message}`); }
+      // ciclo successivo: 7 giorni
+      anagraficaInterval = setInterval(() => {
+        try { refreshAnagrafica(); } catch (e) { logger.error(`Refresh anagrafica schedulato fallito: ${e.message}`); }
+      }, 7 * 24 * 60 * 60 * 1000);
+    }, ms);
+  }
+  scheduleNextAnagraficaRefresh();
+
   // Graceful shutdown
   function shutdown(signal) {
     logger.info(`Ricevuto ${signal}, shutdown graceful...`);
+    clearTimeout(anagraficaTimer);
+    clearInterval(anagraficaInterval);
     httpServer.close(() => {
       close();
       logger.info('Server chiuso.');
