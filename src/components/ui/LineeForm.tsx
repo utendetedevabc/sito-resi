@@ -45,21 +45,24 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
 
   const hasLinee = !!(lineeDisponibili && lineeDisponibili.length > 0);
 
-  // Ricalcola `altre` quando cambiano le linee disponibili (cambio PV o
-  // prefill reso esistente in PUT). È l'unico caso in cui deriviamo `altre`
-  // dal valore di `nome`: le modifiche interne (select / input Altro)
-  // aggiornano `altre` esplicitamente e non devono essere sovrascritte.
-  const prevLineeRef = useRef(lineeDisponibili);
+  // Ricalcola `altre` quando cambia l'INSIEME delle linee disponibili
+  // (cambio PV o prefill reso esistente in PUT). Confronto sul contenuto
+  // (non sul riferimento) così il componente è robusto anche se il parent
+  // passa un nuovo array con lo stesso contenuto ad ogni render. Le
+  // modifiche interne (select / input Altro) aggiornano `altre`
+  // esplicitamente in onSelectChange e NON devono essere sovrascritte.
+  const lineeKey = (lineeDisponibili ?? []).join('|');
+  const prevLineeKeyRef = useRef(lineeKey);
   useEffect(() => {
-    if (prevLineeRef.current === lineeDisponibili) return;
-    prevLineeRef.current = lineeDisponibili;
+    if (prevLineeKeyRef.current === lineeKey) return;
+    prevLineeKeyRef.current = lineeKey;
     setAltre(
       value.map((l) => {
         if (!lineeDisponibili || lineeDisponibili.length === 0) return false;
         return !!l.nome && !lineeDisponibili.includes(l.nome);
       })
     );
-  }, [lineeDisponibili, value]);
+  }, [lineeKey]); // dipende solo dalla key di contenuto, NON da value
 
   function add() {
     onChange([...value, { nome: '', numero_pezzi: 1 }]);
