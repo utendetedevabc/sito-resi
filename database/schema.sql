@@ -140,3 +140,22 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+
+-- Anagrafica punti vendita interna (importata da ZSD127.xlsx, F10).
+-- Aggiornata settimanalmente (domenica 12:00) + refresh forzato.
+CREATE TABLE IF NOT EXISTS anagrafica_pv (
+  cldm TEXT PRIMARY KEY,
+  nome TEXT,
+  indirizzo TEXT,
+  citta TEXT,
+  cap TEXT,
+  provincia TEXT,
+  regione TEXT,
+  resp_codice TEXT,    -- AL: codice responsabile (approva)
+  resp_nome TEXT,      -- AM: nome responsabile
+  promo_codice TEXT,   -- AN: codice promotore (inserisce)
+  promo_nome TEXT,     -- AO: nome promotore
+  linee TEXT,          -- AS: sigle dash-separate, es. "BA-FP-LC-MB-SX"
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_anagrafica_pv_nome ON anagrafica_pv(nome);

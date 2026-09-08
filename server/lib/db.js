@@ -76,6 +76,21 @@ addColumnIfMissing('richieste_reso', 'pv_cap', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_provincia', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_regione', 'TEXT');
 addColumnIfMissing('richieste_reso', 'num_reso', 'INTEGER');      // identificativo sequenziale 1..1.000.000
+// F10: tabella anagrafica PV interna (importata da ZSD127.xlsx). Idempotente.
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS anagrafica_pv (
+    cldm TEXT PRIMARY KEY,
+    nome TEXT, indirizzo TEXT, citta TEXT, cap TEXT,
+    provincia TEXT, regione TEXT,
+    resp_codice TEXT, resp_nome TEXT,
+    promo_codice TEXT, promo_nome TEXT,
+    linee TEXT,
+    updated_at TEXT
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_anagrafica_pv_nome ON anagrafica_pv(nome)');
+} catch (err) {
+  console.error('Errore creazione anagrafica_pv:', err.message);
+}
 // Indice su num_reso: nello schema.sql viene creato insieme alla tabella (fresh
 // install), ma su DB esistente la colonna num_reso arriva solo dopo la
 // migrazione sopra, quindi l'CREATE INDEX dello schema fallisce (colonna
