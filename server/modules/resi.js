@@ -5,6 +5,8 @@ import { generateUUID, sha256 } from '../lib/security.js';
 import { creaResoSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { logAudit } from '../lib/audit.js';
+import { sendWebhook } from './webhook.js';
 import upload from './upload.js';
 
 const router = Router();
@@ -57,23 +59,43 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
   }
 
-  const { numero_ordine, bda, motivo_reso, note, prodotti } = parsed.data;
+  const { numero_ordine, bda, motivo_reso, note, prodotti,
+          cldm, ddt_numero, ddt_data, num_colli,
+          linee, corriere, corriere_nome,
+          pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione } = parsed.data;
   const userId = req.user.id;
   const uuid = generateUUID();
   const bdaHash = bda ? sha256(bda) : null;
+  // bda_autorizzazione in chiaro = numero BDA (per il manifest ritiri corriere)
+  const bdaAutorizzazione = parsed.data.bda_autorizzazione || bda || null;
 
   // Scadenza 30 giorni
   const scadenza = new Date();
   scadenza.setDate(scadenza.getDate() + 30);
 
-  // Stato iniziale in base al ruolo
-  const statoIniziale = req.user.ruolo === 'venditore' ? 'in_revisione' : 'in_attesa';
+  // Stato iniziale in base al ruolo:
+  // - store_account (promoter): in_attesa → serve BOTH approvazioni (venditore + CS)
+  // - venditore (responsabile): in_revisione → salta il 1° livello, approva solo il CS
+  // - customer_service (interno): approvato → AUTO-CHIUSO (l'interno è il livello
+  //   più alto): il reso viene chiuso subito all'inserimento e partono subito il
+  //   webhook ad ABC HUB + generazione file RITGIO*.xls. Nessuna approvazione.
+  const ruolo = req.user.ruolo;
+  const statoIniziale = ruolo === 'venditore' ? 'in_revisione'
+    : ruolo === 'customer_service' ? 'approvato'
+    : 'in_attesa';
+
+  // Identificativo sequenziale del reso (1..1.000.000). Sostituisce la BDA come
+  // "Num. Autorizzazione" nel file corriere. MAX+1; wrap a 1 se supera 1.000.000.
+  let numReso = db.prepare('SELECT COALESCE(MAX(num_reso), 0) + 1 AS n FROM richieste_reso').get().n;
+  if (numReso > 1000000) numReso = 1;
 
   try {
     const stmt = db.prepare(
       `INSERT INTO richieste_reso
-       (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, note, prodotti, data_scadenza, stato)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, note, prodotti, data_scadenza, stato,
+        cldm, ddt_numero, ddt_data, num_colli, bda_autorizzazione,
+        linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, num_reso)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const info = stmt.run(
       uuid,
@@ -82,13 +104,75 @@ router.post('/', (req, res) => {
       bdaHash,
       motivo_reso,
       note || null,
-      JSON.stringify(prodotti),
+      // prodotte: nel nuovo modello (linee) non si inviano prodotti. Si store '[]'
+      // (array vuoto) invece di null perche' alcuni DB esistenti hanno ancora la
+      // colonna prodotti NOT NULL (lo schema.sql la rende nullable solo su fresh
+      // install, ma CREATE TABLE IF NOT EXISTS e' no-op su DB esistenti). Il
+      // webhook e le pagine dettaglio gestiscono [] come "nessun prodotto".
+      prodotti ? JSON.stringify(prodotti) : '[]',
       scadenza.toISOString(),
-      statoIniziale
+      statoIniziale,
+      cldm || null,
+      ddt_numero || null,
+      ddt_data || null,
+      num_colli || null,
+      bdaAutorizzazione,
+      linee ? JSON.stringify(linee) : null,
+      corriere || null,
+      corriere_nome || null,
+      pv_nome || null,
+      pv_indirizzo || null,
+      pv_citta || null,
+      pv_cap || null,
+      pv_provincia || null,
+      pv_regione || null,
+      numReso
     );
 
-    logger.info(`Richiesta reso creata: ${uuid} da utente ${userId} (${req.user.ruolo}) → ${statoIniziale}`);
-    res.status(201).json({ uuid, stato: statoIniziale, id: info.lastInsertRowid });
+    logger.info(`Richiesta reso creata: ${uuid} (N. ${numReso}) da utente ${userId} (${req.user.ruolo}) → ${statoIniziale}`);
+    logAudit(userId, 'RESO_CREATO', { uuid, numero_ordine, stato: statoIniziale, num_reso: numReso, corriere: corriere || null }, req);
+    res.status(201).json({ uuid, stato: statoIniziale, id: info.lastInsertRowid, num_reso: numReso });
+
+    // Interno (customer_service): auto-chiuso. Il reso è approvato definitivamente
+    // già alla creazione → invia subito il webhook ad ABC HUB (che genera il file
+    // RITGIO*.xls su disco). Fire-and-forget (DOPO res.json): non blocca la
+    // risposta. Stesso payload del customer-service.js PUT approvato.
+    if (ruolo === 'customer_service') {
+      try {
+        const creator = db.prepare('SELECT codice_cliente_esterno FROM users WHERE id = ?').get(userId);
+        const row = db.prepare('SELECT * FROM richieste_reso WHERE uuid = ?').get(uuid);
+        if (row) {
+          sendWebhook({
+            id_richiesta: uuid,
+            numero_ordine: row.numero_ordine_esterno,
+            bda_hash: row.bda_hash,
+            venditore_codice: creator?.codice_cliente_esterno || '',
+            prodotti: row.prodotti ? JSON.parse(row.prodotti) : [],
+            linee: row.linee ? JSON.parse(row.linee) : [],
+            corriere: row.corriere || null,
+            corriere_nome: row.corriere_nome || null,
+            pv_nome: row.pv_nome || null,
+            pv_indirizzo: row.pv_indirizzo || null,
+            pv_citta: row.pv_citta || null,
+            pv_cap: row.pv_cap || null,
+            pv_provincia: row.pv_provincia || null,
+            pv_regione: row.pv_regione || null,
+            num_reso: row.num_reso ?? null,
+            motivo_reso: row.motivo_reso,
+            note: row.note,
+            data_approvazione: new Date().toISOString(),
+            cldm: row.cldm || null,
+            ddt_numero: row.ddt_numero || null,
+            ddt_data: row.ddt_data || null,
+            num_colli: row.num_colli ?? null,
+            bda_autorizzazione: row.bda_autorizzazione || null,
+          }).catch((err) => logger.error(`Webhook fallito per ${uuid} (CS auto-chiuso): ${err.message}`));
+          logAudit(userId, 'RESO_APPROVATO_FINALE', { uuid, stato: 'approvato', auto: true }, req);
+        }
+      } catch (e) {
+        logger.error(`Post-creazione CS fallita per ${uuid}: ${e.message}`);
+      }
+    }
   } catch (err) {
     logger.error(`Errore creazione reso: ${err.message}`);
     res.status(500).json({ error: 'Errore interno del server' });
@@ -139,20 +223,41 @@ router.put('/:uuid', (req, res) => {
     return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
   }
 
-  const { numero_ordine, bda, motivo_reso, note, prodotti } = parsed.data;
+  const { numero_ordine, bda, motivo_reso, note, prodotti,
+          cldm, ddt_numero, ddt_data, num_colli,
+          linee, corriere, corriere_nome,
+          pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione } = parsed.data;
   const bdaHash = bda ? sha256(bda) : null;
+  const bdaAutorizzazione = parsed.data.bda_autorizzazione || bda || null;
 
   try {
     db.prepare(
       `UPDATE richieste_reso SET
-       numero_ordine_esterno = ?, bda_hash = ?, motivo_reso = ?, note = ?, prodotti = ?, updated_at = datetime('now')
+       numero_ordine_esterno = ?, bda_hash = ?, motivo_reso = ?, note = ?, prodotti = ?, updated_at = datetime('now'),
+       cldm = ?, ddt_numero = ?, ddt_data = ?, num_colli = ?, bda_autorizzazione = ?,
+       linee = ?, corriere = ?, corriere_nome = ?,
+       pv_nome = ?, pv_indirizzo = ?, pv_citta = ?, pv_cap = ?, pv_provincia = ?, pv_regione = ?
        WHERE uuid = ?`
     ).run(
       numero_ordine,
       bdaHash,
       motivo_reso,
       note || null,
-      JSON.stringify(prodotti),
+      prodotti ? JSON.stringify(prodotti) : '[]',
+      cldm || null,
+      ddt_numero || null,
+      ddt_data || null,
+      num_colli || null,
+      bdaAutorizzazione,
+      linee ? JSON.stringify(linee) : null,
+      corriere || null,
+      corriere_nome || null,
+      pv_nome || null,
+      pv_indirizzo || null,
+      pv_citta || null,
+      pv_cap || null,
+      pv_provincia || null,
+      pv_regione || null,
       uuid
     );
 
@@ -184,6 +289,7 @@ router.delete('/:uuid', (req, res) => {
   ).run(uuid);
 
   logger.info(`Richiesta reso annullata: ${uuid}`);
+  logAudit(userId, 'RESO_ANNULLATO', { uuid }, req);
   res.json({ success: true });
 });
 

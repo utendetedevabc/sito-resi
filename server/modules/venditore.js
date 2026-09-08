@@ -4,6 +4,7 @@ import logger from '../lib/logger.js';
 import { approvaResoSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { logAudit } from '../lib/audit.js';
 
 const router = Router();
 
@@ -101,6 +102,7 @@ router.put('/richieste/:uuid', (req, res) => {
   ).run(nuovoStato, note || null, dataApprovazione, venditoreId, uuid);
 
   logger.info(`Richiesta ${uuid} ${nuovoStato} da venditore ${venditoreId}`);
+  logAudit(venditoreId, stato === 'approvato' ? 'RESO_APPROVATO_1' : 'RESO_RIFIUTATO_1', { uuid, stato: nuovoStato, note: note || null }, req);
 
   res.json({ success: true, stato: nuovoStato });
 });

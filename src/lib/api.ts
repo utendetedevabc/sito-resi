@@ -19,25 +19,9 @@ async function request(method: string, path: string, body?: any): Promise<any> {
     credentials: 'include',
   });
 
-  if (res.status === 401) {
-    // Try refresh
-    const refreshRes = await fetch(`${BASE_URL}/api/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-    });
-    if (refreshRes.ok) {
-      const refreshData = await refreshRes.json();
-      localStorage.setItem('access_token', refreshData.access_token);
-      // Retry original request
-      return request(method, path, body);
-    } else {
-      localStorage.removeItem('access_token');
-      if (typeof window !== 'undefined') {
-        window.location.href = '/login';
-      }
-      throw new Error('Sessione scaduta');
-    }
-  }
+  // La gestione 401 (refresh + retry + redirect) è delegata ALL'INTERCEPTOR
+  // globale di window.fetch in src/hooks/useAuth.tsx (unica fonte di verità).
+  // Un secondo gestore qui causava doppia ricorsione e redirect multipli.
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {

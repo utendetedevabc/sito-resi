@@ -1,0 +1,47 @@
+'use client';
+
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+
+interface LinkItem {
+  href: string;
+  label: string;
+  icon?: React.ReactNode;
+}
+
+interface Props {
+  links: LinkItem[];
+  activePath: string;
+}
+
+export default function Sidebar({ links }: Props) {
+  const pathname = usePathname();
+
+  return (
+    <aside aria-label="Menu laterale" className="w-64 sidebar-modern flex-shrink-0 hidden md:flex flex-col">
+      <nav className="flex-1 py-6">
+        <ul className="space-y-0.5 px-2">
+          {links.map((link, i) => {
+            const isActive = pathname === link.href || pathname.startsWith(link.href + '/');
+            return (
+              <li key={link.href + i}>
+                <Link
+                  href={link.href}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    isActive
+                      ? 'bg-white/10 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  {link.icon && <span className="w-5 h-5 flex items-center justify-center opacity-80">{link.icon}</span>}
+                  {link.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </aside>
+  );
+}

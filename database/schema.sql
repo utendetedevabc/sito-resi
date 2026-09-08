@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,         -- bcrypt $2b$12$ + pepper
-  ruolo TEXT NOT NULL CHECK(ruolo IN ('store_account','venditore','admin')),
+  ruolo TEXT NOT NULL CHECK(ruolo IN ('store_account','venditore','customer_service','admin')),
   nome TEXT NOT NULL,
   azienda TEXT,
   codice_cliente_esterno TEXT,         -- Mai codice reale ABC HUB
@@ -46,9 +46,9 @@ CREATE TABLE IF NOT EXISTS richieste_reso (
   bda_hash TEXT,                        -- SHA-256 del BDA
   motivo_reso TEXT NOT NULL CHECK(motivo_reso IN ('difettoso','errato','non_conforme','altro')),
   note TEXT,
-  prodotti TEXT NOT NULL,               -- JSON array validato
+  prodotti TEXT,                        -- JSON array (modello vecchio, nullable)
   stato TEXT NOT NULL DEFAULT 'in_attesa'
-    CHECK(stato IN ('in_attesa','approvato','rifiutato','spedito','completato','annullato')),
+    CHECK(stato IN ('in_attesa','in_revisione','approvato','rifiutato','spedito','completato','annullato')),
   venditore_id INTEGER REFERENCES users(id),
   note_venditore TEXT,
   data_approvazione TEXT,
@@ -58,7 +58,19 @@ CREATE TABLE IF NOT EXISTS richieste_reso (
   webhook_last_attempt TEXT,
   webhook_response_code INTEGER,
   created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
+  updated_at TEXT DEFAULT (datetime('now')),
+  -- Modello nuovo (linee + corriere + PV manuale + num_reso). Colonne vecchie
+  -- (prodotti, cldm, num_colli, bda_autorizzazione) restano per backward compat.
+  linee TEXT,                            -- JSON [{nome}]
+  corriere TEXT,                         -- GLS/NIEDDU/TRAMES/PARENA/ALTRI
+  corriere_nome TEXT,                    -- nome libero se corriere=ALTRI
+  pv_nome TEXT,                          -- ragione sociale PV (inserito manualmente)
+  pv_indirizzo TEXT,
+  pv_citta TEXT,
+  pv_cap TEXT,
+  pv_provincia TEXT,
+  pv_regione TEXT,
+  num_reso INTEGER                       -- identificativo sequenziale 1..1.000.000
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -98,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_richieste_user ON richieste_reso(user_id);
 CREATE INDEX IF NOT EXISTS idx_richieste_stato ON richieste_reso(stato);
 CREATE INDEX IF NOT EXISTS idx_richieste_venditore ON richieste_reso(venditore_id);
 CREATE INDEX IF NOT EXISTS idx_richieste_uuid ON richieste_reso(uuid);
+CREATE INDEX IF NOT EXISTS idx_richieste_num_reso ON richieste_reso(num_reso);
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_data ON audit_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id);

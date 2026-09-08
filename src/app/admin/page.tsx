@@ -88,6 +88,12 @@ export default function AdminDashboardPage() {
                 Visualizza richieste
               </Link>
             </div>
+            <Link
+              href="/admin/storico"
+              className="flex items-center justify-center h-12 bg-gray-800 text-gray-200 font-medium rounded-2xl active:bg-gray-700 transition-colors border border-gray-700"
+            >
+              Storico azioni
+            </Link>
           </>
         )}
       </div>
