@@ -9,9 +9,15 @@ const ORDINE_REGEX = /^[A-Za-z0-9\-_\/]{3,50}$/;
 // BDA: solo numeri, 1-15 cifre
 const BDA_REGEX = /^\d{1,15}$/;
 
+// Login: la lunghezza minima della password è una policy di CREAZIONE
+// (enforced in createUserSchema riga 75, min(12)), NON di verifica login.
+// Il login accetta qualsiasi password non-vuota e delega a verifyPassword
+// (auth.js:121) il controllo dell'hash bcrypt — una password sbagliata di
+// qualsiasi lunghezza fallisce comunque. Necessario per F11: provisioning
+// account dal xlsx con password 8/10 char.
 export const loginSchema = z.object({
   email: z.string().email().max(255).transform(sanitize),
-  password: z.string().min(12).max(128),
+  password: z.string().min(1).max(128),
 });
 
 // CLDM punto vendita: alfanumerico (es. 503990, TIGULLIO)
