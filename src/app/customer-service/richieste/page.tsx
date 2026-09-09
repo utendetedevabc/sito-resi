@@ -228,6 +228,10 @@ export default function CSRRichiestePage() {
       setSelected(new Set());
       // Ricarica: i resi esportati lasciano "Approvati" (ora spediti).
       await fetchData(vista, applied);
+      // Focus management: la barra export (e i suoi checkbox) potrebbero scomparire
+      // dopo il refresh (resi→spediti, lista vuota). Sposta il focus sul tab
+      // "Approvati" (sempre presente) per evitare focus nel vuoto (WCAG 2.4.3).
+      requestAnimationFrame(() => tabRefs.current['approvati']?.focus());
     } catch (err: unknown) {
       const m = (err as Error).message || 'Errore esportazione';
       addToast('error', m);
@@ -410,7 +414,7 @@ export default function CSRRichiestePage() {
                     {/* Checkbox (solo tab Approvati): elemento separato dall'accordion
                         header (click non espande la riga). */}
                     {vista === 'approvati' && (
-                      <div className="flex items-center pl-3">
+                      <div className="flex items-center justify-center min-w-[44px] min-h-[44px] pl-3">
                         <input
                           type="checkbox"
                           className="w-5 h-5 accent-blue-600"
@@ -466,7 +470,7 @@ export default function CSRRichiestePage() {
                         {r.data_spedizione && (
                           <p><span className="text-gray-500">Data spedizione:</span> {new Date(r.data_spedizione).toLocaleString('it-IT')}</p>
                         )}
-                        {(r.cldm || r.ddt_numero || r.num_colli || r.bda_autorizzazione || r.corriere) && (
+                        {(r.cldm || r.ddt_numero || r.num_colli || r.corriere) && (
                           <p className="text-xs text-gray-500">
                             CLDM {r.cldm || '—'} · DDT {r.ddt_numero || '—'} · Colli {r.num_colli ?? '—'} · Corriere {r.corriere || '—'}
                           </p>
@@ -499,12 +503,12 @@ export default function CSRRichiestePage() {
                       {vista === 'da_approvare' ? (
                         <div className="flex gap-2">
                           <button
-                            onClick={() => handleAzione(r.uuid, 'rifiuta')}
+                            onClick={() => handleAzione(r.uuid, 'rifiutato')}
                             disabled={saving}
                             className="flex-1 h-12 bg-red-900/30 text-red-300 font-medium rounded-xl border border-red-800 active:bg-red-900/50 transition-colors flex items-center justify-center gap-2"
                           >
                             <XCircleIcon className="w-5 h-5" aria-hidden />
-                            {azione?.uuid === r.uuid && azione.tipo === 'rifiuta' ? 'Conferma rifiuto' : 'Rifiuta'}
+                            {azione?.uuid === r.uuid && azione.tipo === 'rifiutato' ? 'Conferma rifiuto' : 'Rifiuta'}
                           </button>
                           <button
                             onClick={() => handleAzione(r.uuid, 'approvato')}
