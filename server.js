@@ -16,6 +16,7 @@ import notificationsRouter from './server/modules/notifications.js';
 import db, { close } from './server/lib/db.js';
 import logger from './server/lib/logger.js';
 import { refreshAnagrafica } from './server/lib/anagrafica.js';
+import { refreshAgenti } from './server/lib/agenti.js';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT) || 3002;
@@ -91,9 +92,11 @@ app.prepare().then(() => {
     clearInterval(anagraficaInterval);
     anagraficaTimer = setTimeout(() => {
       try { refreshAnagrafica(); } catch (e) { logger.error(`Refresh anagrafica schedulato fallito: ${e.message}`); }
+      try { refreshAgenti(); } catch (e) { logger.error(`Refresh agenti schedulato fallito: ${e.message}`); }
       // ciclo successivo: 7 giorni
       anagraficaInterval = setInterval(() => {
         try { refreshAnagrafica(); } catch (e) { logger.error(`Refresh anagrafica schedulato fallito: ${e.message}`); }
+        try { refreshAgenti(); } catch (e) { logger.error(`Refresh agenti schedulato fallito: ${e.message}`); }
       }, 7 * 24 * 60 * 60 * 1000);
     }, ms);
   }
