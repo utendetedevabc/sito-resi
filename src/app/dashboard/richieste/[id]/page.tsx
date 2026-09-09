@@ -230,9 +230,9 @@ export default function RichiestaDetailPage() {
                   )}
                 </>
               )}
-              {!richiesta.pv_nome && richiesta.cldm && (
+              {richiesta.cldm && (
                 <div className="flex justify-between gap-4">
-                  <dt className="text-gray-500">CLDM punto vendita</dt>
+                  <dt className="text-gray-500">CLDM</dt>
                   <dd className="text-gray-100 font-medium text-right">{richiesta.cldm}</dd>
                 </div>
               )}
