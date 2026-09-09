@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import db from '../lib/db.js';
 import logger from '../lib/logger.js';
 import { csResoSchema } from './validation.js';
@@ -7,6 +10,11 @@ import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
 import { sendWebhook } from './webhook.js';
 import { buildResiXls, pvDbAvailable } from '../lib/xls-export.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Cartella dove salvare il file GLS giornaliero aggregato su disco
+// (configurabile via env; default Scrivania dell'utente, scrivibile in dev).
+const GLS_EXPORT_DIR = process.env.GLS_EXPORT_DIR || '/home/adimn/Scrivania';
 
 const router = Router();
 
@@ -50,6 +58,41 @@ router.get('/richieste', (req, res) => {
   const data = dataStmt.all(limit, offset);
 
   res.json({ data, total, page: Math.max(parseInt(page) || 1, 1), per_page: limit });
+});
+
+// GET /api/customer-service/gls/giornaliero?data=YYYY-MM-DD (default oggi)
+// File GLS giornaliero aggregato: tutti i resi approvati dall'interno nella
+// giornata con corriere=GLS. Una riga per reso, header 16-col RITGIO invariato.
+// Salva su disco (RITGIO_GLS_<DDMMYY>.xls) + stream download.
+router.get('/gls/giornaliero', (req, res) => {
+  const dataParam = req.query.data || new Date().toISOString().split('T')[0];
+  const rows = db.prepare(
+    `SELECT * FROM richieste_reso
+     WHERE stato = 'approvato' AND corriere = 'GLS' AND date(data_approvazione) = date(?)
+     ORDER BY num_reso ASC`
+  ).all(dataParam);
+
+  if (rows.length === 0) {
+    return res.status(404).json({ error: `Nessun reso GLS approvato in data ${dataParam}`, count: 0 });
+  }
+
+  try {
+    const { buf, filename } = buildResiXls(rows);
+    // nome file distintivo per il giornaliero aggregato
+    const glsFilename = filename.replace('RITGIO_', 'RITGIO_GLS_');
+    const outPath = path.join(GLS_EXPORT_DIR, glsFilename);
+    try { fs.writeFileSync(outPath, Buffer.from(buf)); } catch (e) {
+      logger.error(`Scrittura file GLS su disco fallita: ${e.message}`);
+    }
+    logger.info(`File GLS giornaliero generato: ${glsFilename} (${rows.length} resi) da CS ${req.user.id}`);
+    logAudit(req.user.id, 'GLS_EXPORT_GIORNALIERO', { filename: glsFilename, count: rows.length, data: dataParam }, req);
+    res.setHeader('Content-Type', 'application/vnd.ms-excel');
+    res.setHeader('Content-Disposition', `attachment; filename="${glsFilename}"`);
+    res.send(Buffer.from(buf));
+  } catch (err) {
+    logger.error(`Errore generazione file GLS giornaliero: ${err.message}`);
+    res.status(500).json({ error: 'Errore generazione file GLS', detail: err.message });
+  }
 });
 
 // GET /api/customer-service/richieste/:uuid

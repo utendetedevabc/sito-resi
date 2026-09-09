@@ -104,13 +104,20 @@ router.post('/', (req, res) => {
   let numReso = db.prepare('SELECT COALESCE(MAX(num_reso), 0) + 1 AS n FROM richieste_reso').get().n;
   if (numReso > 1000000) numReso = 1;
 
+  // F10: data_approvazione va popolata gia' all'INSERT quando il reso nasce
+  // auto-chiuso (customer_service). Per store_account (in_attesa) e venditore
+  // (in_revisione) resta NULL (non ancora approvato). Senza questo, l'endpoint
+  // GLS giornaliero (filtro date(data_approvazione)=date(?)) non cattura i resi
+  // creati come CS e le stats "oggi" li sottostimano.
+  const dataApprovazione = statoIniziale === 'approvato' ? new Date().toISOString() : null;
+
   try {
     const stmt = db.prepare(
       `INSERT INTO richieste_reso
-       (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, note, prodotti, data_scadenza, stato,
+       (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, note, prodotti, data_scadenza, stato, data_approvazione,
         cldm, ddt_numero, ddt_data, num_colli, bda_autorizzazione,
         linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, num_reso)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const info = stmt.run(
       uuid,
@@ -129,6 +136,7 @@ router.post('/', (req, res) => {
       prodotti ? JSON.stringify(prodotti) : '[]',
       scadenza.toISOString(),
       statoIniziale,
+      dataApprovazione,
       cldm || null,
       ddt_numero || null,
       ddt_data || null,
