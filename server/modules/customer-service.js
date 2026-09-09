@@ -136,7 +136,7 @@ router.get('/richieste', (req, res) => {
 //     spediti/completati/annullati sono skippati dal WHERE della SELECT e
 //     dell'UPDATE (idempotenti: non vengono riesportati ne' ri-marcati).
 //   - Transazione atomica: se una UPDATE fallisce, rollback (nessuno diventa
-//     spedito). L'XLS e' generato dopo il commit con i resi effettivamente
+//     spedito). L'XLS e' generato PRIMA del commit (atomicita': se la generazione
 //     marcati.
 //   - XLS: buildResiXls(rows) gia' itera rows in un unico worksheet multi-riga
 //     (riuso, nessuna modifica a xls-export.js).
@@ -157,6 +157,16 @@ router.post('/richieste/export', (req, res) => {
     return res.status(404).json({ error: 'Nessun reso approvato selezionato' });
   }
 
+  // Genera l'XLS PRIMA di marcare spedito: se buildResiXls fallisce, i resi
+  // restano 'approvato' (azione atomica, niente stato inconsistente senza file).
+  let buf, filename;
+  try {
+    ({ buf, filename } = buildResiXls(resi));
+  } catch (err) {
+    logger.error(`Errore generazione XLS export selezionati: ${err.message}`);
+    return res.status(500).json({ error: 'Errore generazione file corriere', detail: err.message });
+  }
+
   const now = new Date().toISOString();
   const tx = db.transaction(() => {
     for (const r of resi) {
@@ -167,14 +177,6 @@ router.post('/richieste/export', (req, res) => {
     }
   });
   tx();
-
-  let buf, filename;
-  try {
-    ({ buf, filename } = buildResiXls(resi));
-  } catch (err) {
-    logger.error(`Errore generazione XLS export selezionati: ${err.message}`);
-    return res.status(500).json({ error: 'Errore generazione file corriere', detail: err.message });
-  }
 
   logAudit(req.user.id, 'RESI_EXPORT_SELEZIONATI', { count: resi.length, uuids }, req);
   logger.info(`Export selezionati: ${resi.length} resi → spedito da CS ${req.user.id}`);
