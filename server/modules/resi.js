@@ -196,9 +196,14 @@ router.post('/', (req, res) => {
     // risposta. Stesso payload del customer-service.js PUT approvato.
     if (ruolo === 'customer_service') {
       try {
-        const creator = db.prepare('SELECT codice_cliente_esterno FROM users WHERE id = ?').get(userId);
+        const creator = db.prepare('SELECT codice_cliente_esterno, nome, ruolo FROM users WHERE id = ?').get(userId);
         const row = db.prepare('SELECT * FROM richieste_reso WHERE uuid = ?').get(uuid);
         if (row) {
+          // CS auto-chiuso: l'interno è sia richiedente che approvatore (1° e
+          // unico livello). nome/ruolo arrivano dalla riga users; se il lookup
+          // fallisce (utente rimosso?), si invia null — il webhook non si blocca.
+          const csNome = creator?.nome ?? null;
+          const csRuolo = creator?.ruolo ?? null;
           sendWebhook({
             id_richiesta: uuid,
             numero_ordine: row.numero_ordine_esterno,
@@ -223,6 +228,10 @@ router.post('/', (req, res) => {
             ddt_data: row.ddt_data || null,
             num_colli: row.num_colli ?? null,
             bda_autorizzazione: row.bda_autorizzazione || null,
+            richiedente_nome: csNome,
+            richiedente_ruolo: csRuolo,
+            approvatore_nome: csNome,
+            approvatore_ruolo: csRuolo,
           }).catch((err) => logger.error(`Webhook fallito per ${uuid} (CS auto-chiuso): ${err.message}`));
           logAudit(userId, 'RESO_APPROVATO_FINALE', { uuid, stato: 'approvato', auto: true }, req);
         }

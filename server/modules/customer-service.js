@@ -192,6 +192,15 @@ router.put('/richieste/:uuid', async (req, res) => {
     const venditore = db.prepare('SELECT codice_cliente_esterno FROM users WHERE id = ?').get(existing.venditore_id || existing.user_id);
     const richiestaAggiornata = db.prepare('SELECT * FROM richieste_reso WHERE uuid = ?').get(uuid);
 
+    // Audit (opzionali, nullable): richiedente = utente che ha creato il reso
+    // (user_id), approvatore = venditore responsabile 1° livello (venditore_id).
+    // Se venditore_id è NULL (reso pre-F11 o store_account senza routing), si
+    // invia null per approvatore_* — il webhook non si blocca.
+    const richiedente = db.prepare('SELECT nome, ruolo FROM users WHERE id = ?').get(existing.user_id);
+    const approvatore = existing.venditore_id
+      ? db.prepare('SELECT nome, ruolo FROM users WHERE id = ?').get(existing.venditore_id)
+      : null;
+
     sendWebhook({
       id_richiesta: uuid,
       numero_ordine: richiestaAggiornata.numero_ordine_esterno,
@@ -217,6 +226,10 @@ router.put('/richieste/:uuid', async (req, res) => {
       ddt_data: richiestaAggiornata.ddt_data || null,
       num_colli: richiestaAggiornata.num_colli ?? null,
       bda_autorizzazione: richiestaAggiornata.bda_autorizzazione || null,
+      richiedente_nome: richiedente?.nome ?? null,
+      richiedente_ruolo: richiedente?.ruolo ?? null,
+      approvatore_nome: approvatore?.nome ?? null,
+      approvatore_ruolo: approvatore?.ruolo ?? null,
     }).catch((err) => logger.error(`Webhook fallito per ${uuid}: ${err.message}`));
   }
 

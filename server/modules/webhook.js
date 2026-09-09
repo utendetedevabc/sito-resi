@@ -44,6 +44,14 @@ export async function sendWebhook(richiesta) {
     ddt_data: richiesta.ddt_data || null,
     num_colli: richiesta.num_colli ?? null,
     bda_autorizzazione: richiesta.bda_autorizzazione || null,
+    // Audit (opzionali, nullable): chi ha creato il reso (richiedente) e chi lo
+    // ha approvato al 1° livello (approvatore). Per CS auto-chiuso coincidono
+    // (l'interno è sia richiedente che approvatore). Backward compat: payload
+    // precedenti senza questi campi restano validi lato ABC HUB (undefined/null).
+    richiedente_nome: richiesta.richiedente_nome ?? null,
+    richiedente_ruolo: richiesta.richiedente_ruolo ?? null,
+    approvatore_nome: richiesta.approvatore_nome ?? null,
+    approvatore_ruolo: richiesta.approvatore_ruolo ?? null,
   };
 
   const body = JSON.stringify(payload);
