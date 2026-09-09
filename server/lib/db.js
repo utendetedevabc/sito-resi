@@ -76,6 +76,10 @@ addColumnIfMissing('richieste_reso', 'pv_cap', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_provincia', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_regione', 'TEXT');
 addColumnIfMissing('richieste_reso', 'num_reso', 'INTEGER');      // identificativo sequenziale 1..1.000.000
+// F11: routing approvazioni per responsabile. resp_codice/resp_nome memorizzati
+// sul reso alla creazione (lookupPvByCldm) e usati dal filtro venditore.js.
+addColumnIfMissing('richieste_reso', 'resp_codice', 'TEXT');
+addColumnIfMissing('richieste_reso', 'resp_nome', 'TEXT');
 // F10: tabella anagrafica PV interna (importata da ZSD127.xlsx). Idempotente.
 try {
   db.exec(`CREATE TABLE IF NOT EXISTS anagrafica_pv (
@@ -90,6 +94,27 @@ try {
   db.exec('CREATE INDEX IF NOT EXISTS idx_anagrafica_pv_nome ON anagrafica_pv(nome)');
 } catch (err) {
   console.error('Errore creazione anagrafica_pv:', err.message);
+}
+// F11: anagrafica agenti interna (fonte per provisioning users). Importata da
+// anagrafica_agenti.xlsx (FUORI repo). password_hash = bcrypt+PEPPER, mai chiaro.
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS anagrafica_agenti (
+    codice TEXT PRIMARY KEY,
+    nome TEXT,
+    email TEXT,
+    password_hash TEXT,
+    ruolo TEXT,
+    updated_at TEXT
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_anagrafica_agenti_email ON anagrafica_agenti(email)');
+} catch (err) {
+  console.error('Errore creazione anagrafica_agenti:', err.message);
+}
+// Indice resp_codice per il filtro venditore (idempotente).
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_reso_resp_codice ON richieste_reso(resp_codice)');
+} catch (err) {
+  console.error('Errore creazione idx_richieste_reso_resp_codice:', err.message);
 }
 // Indice su num_reso: nello schema.sql viene creato insieme alla tabella (fresh
 // install), ma su DB esistente la colonna num_reso arriva solo dopo la

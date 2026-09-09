@@ -70,7 +70,10 @@ CREATE TABLE IF NOT EXISTS richieste_reso (
   pv_cap TEXT,
   pv_provincia TEXT,
   pv_regione TEXT,
-  num_reso INTEGER                       -- identificativo sequenziale 1..1.000.000
+  num_reso INTEGER,                      -- identificativo sequenziale 1..1.000.000
+  -- F11: routing per responsabile. Popolati alla creazione da lookupPvByCldm(cldm).
+  resp_codice TEXT,                      -- codice responsabile (anagrafica_pv.resp_codice)
+  resp_nome TEXT                         -- nome responsabile (anagrafica_pv.resp_nome)
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -159,3 +162,15 @@ CREATE TABLE IF NOT EXISTS anagrafica_pv (
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_anagrafica_pv_nome ON anagrafica_pv(nome);
+
+-- F11: anagrafica agenti (fonte provisioning users). xlsx FUORI repo.
+CREATE TABLE IF NOT EXISTS anagrafica_agenti (
+  codice TEXT PRIMARY KEY,
+  nome TEXT,
+  email TEXT,
+  password_hash TEXT,                     -- bcrypt + PASSWORD_PEPPER, mai in chiaro
+  ruolo TEXT,                             -- store_account|venditore (match vs anagrafica_pv)
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_anagrafica_agenti_email ON anagrafica_agenti(email);
+CREATE INDEX IF NOT EXISTS idx_richieste_reso_resp_codice ON richieste_reso(resp_codice);
