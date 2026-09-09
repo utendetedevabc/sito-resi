@@ -135,9 +135,10 @@ router.get('/richieste', (req, res) => {
 //   - Solo resi con stato='approvato' vengono marcati spediti: resi gia'
 //     spediti/completati/annullati sono skippati dal WHERE della SELECT e
 //     dell'UPDATE (idempotenti: non vengono riesportati ne' ri-marcati).
-//   - Transazione atomica: se una UPDATE fallisce, rollback (nessuno diventa
-//     spedito). L'XLS e' generato PRIMA del commit (atomicita': se la generazione
-//     marcati.
+//   - Atomicita': l'XLS e' generato PRIMA della transazione UPDATE; se
+//     buildResiXls lancia, i resi restano 'approvato' (nessuno spedito senza
+//     file). Se una UPDATE fallisce, la transazione fa rollback (nessuno
+//     diventa spedito).
 //   - XLS: buildResiXls(rows) gia' itera rows in un unico worksheet multi-riga
 //     (riuso, nessuna modifica a xls-export.js).
 router.post('/richieste/export', (req, res) => {
