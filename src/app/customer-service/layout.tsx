@@ -12,6 +12,7 @@ const tabs = [
   { path: '/customer-service', label: 'Home' },
   { path: '/customer-service/nuova', label: 'Nuovo reso' },
   { path: '/customer-service/richieste', label: 'Da approvare' },
+  { path: '/customer-service/gls', label: 'File GLS' },
   { path: '/customer-service/storico', label: 'Storico' },
   { path: '/customer-service/profilo', label: 'Profilo' },
 ];
