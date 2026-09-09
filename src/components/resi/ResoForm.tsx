@@ -78,6 +78,9 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
   const pvCittaRef = useRef<HTMLInputElement>(null);
   const pvCapRef = useRef<HTMLInputElement>(null);
   const pvProvinciaRef = useRef<HTMLInputElement>(null);
+  // Ref al campo cldm: quando il fieldset manuale si smonta (lookup torna OK o
+  // cldm svuotato), riportiamo il focus sul cldm se prima era sul fieldset.
+  const cldmRef = useRef<HTMLInputElement>(null);
 
   // Ripulisce i campi PV manuali + i relativi errori. Usato quando il lookup
   // torna OK (utente ha corretto il CLDM) o quando il CLDM viene svuotato.
@@ -194,6 +197,9 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
   // o se la search debounced restituisce risultati dopo un nuovo blur.
   async function fetchPv(code: string) {
     cldmCorrenteRef.current = code;
+    // Cattura lo stato precedente (prima di questa lookup): serve per il
+    // focus management quando il fieldset manuale si smonta.
+    const eraPvNotFound = pvNotFound;
     if (!code) {
       setPv(null);
       setLineePv([]);
@@ -201,6 +207,9 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       setPvNotFound(false);
       setPvLookupMsg('');
       clearPvManuali();
+      // Se il fieldset manuale era aperto e ora si chiude (cldm svuotato),
+      // riporta il focus sul cldm (era sul fieldset, ora smontato).
+      if (eraPvNotFound) requestAnimationFrame(() => cldmRef.current?.focus());
       return;
     }
     try {
@@ -216,8 +225,9 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
         setCldmError('CLDM non trovato in anagrafica');
         setPvNotFound(true);
         setPvLookupMsg('CLDM non trovato in anagrafica: inserisci i dati del PV manualmente');
-        // Sposta il focus sul primo campo manuale dopo il render del fieldset.
-        requestAnimationFrame(() => pvNomeRef.current?.focus());
+        // Sposta il focus sul primo campo manuale solo alla PRIMA attivazione
+        // del reveal (non a ogni re-blur di un cldm già fallito).
+        if (!eraPvNotFound) requestAnimationFrame(() => pvNomeRef.current?.focus());
         return;
       }
       const data = await res.json();
@@ -229,6 +239,9 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       setPvNotFound(false);
       setPvLookupMsg(`Punto vendita trovato: ${data.pv.nome}`);
       clearPvManuali();
+      // Se il fieldset manuale era aperto e ora si chiude (lookup OK),
+      // riporta il focus sul cldm (era sul fieldset, ora smontato).
+      if (eraPvNotFound) requestAnimationFrame(() => cldmRef.current?.focus());
     } catch {
       if (code !== cldmCorrenteRef.current) return;
       setCldmError('Errore caricamento PV');
@@ -301,6 +314,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
           value={cldm}
           onChange={(e) => onCldmChange(e.target.value)}
           onBlur={(e) => fetchPv(e.target.value)}
+          ref={cldmRef}
           className="input-mobile"
           placeholder="Es. 507888"
           autoComplete="off"
@@ -383,7 +397,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
                   ref={pvIndirizzoRef} value={pvIndirizzo}
                   onChange={(e) => { setPvIndirizzo(e.target.value); clearPvError('pv_indirizzo'); }}
                   aria-invalid={!!pvErrors.pv_indirizzo}
-                  aria-describedby={pvErrors.pv_indirizzo ? 'pv_indirizzo-err' : 'pv-manual-help'}
+                  aria-describedby={pvErrors.pv_indirizzo ? 'pv_indirizzo-err' : undefined}
                 />
                 {pvErrors.pv_indirizzo && <p id="pv_indirizzo-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_indirizzo}</p>}
               </div>
@@ -397,7 +411,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
                   ref={pvCittaRef} value={pvCitta}
                   onChange={(e) => { setPvCitta(e.target.value); clearPvError('pv_citta'); }}
                   aria-invalid={!!pvErrors.pv_citta}
-                  aria-describedby={pvErrors.pv_citta ? 'pv_citta-err' : 'pv-manual-help'}
+                  aria-describedby={pvErrors.pv_citta ? 'pv_citta-err' : undefined}
                 />
                 {pvErrors.pv_citta && <p id="pv_citta-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_citta}</p>}
               </div>
@@ -411,7 +425,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
                   ref={pvCapRef} value={pvCap}
                   onChange={(e) => { setPvCap(e.target.value); clearPvError('pv_cap'); }}
                   aria-invalid={!!pvErrors.pv_cap}
-                  aria-describedby={pvErrors.pv_cap ? 'pv_cap-err' : 'pv-manual-help'}
+                  aria-describedby={pvErrors.pv_cap ? 'pv_cap-err' : undefined}
                 />
                 {pvErrors.pv_cap && <p id="pv_cap-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_cap}</p>}
               </div>
@@ -425,7 +439,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
                   ref={pvProvinciaRef} value={pvProvincia}
                   onChange={(e) => { setPvProvincia(e.target.value); clearPvError('pv_provincia'); }}
                   aria-invalid={!!pvErrors.pv_provincia}
-                  aria-describedby={pvErrors.pv_provincia ? 'pv_provincia-err' : 'pv-manual-help'}
+                  aria-describedby={pvErrors.pv_provincia ? 'pv_provincia-err' : undefined}
                 />
                 {pvErrors.pv_provincia && <p id="pv_provincia-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_provincia}</p>}
               </div>
@@ -438,7 +452,6 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
                   autoComplete="address-level1" maxLength={60} className="input-mobile"
                   value={pvRegione}
                   onChange={(e) => setPvRegione(e.target.value)}
-                  aria-describedby="pv-manual-help"
                 />
               </div>
             </div>
