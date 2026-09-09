@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import db from '../lib/db.js';
 import logger from '../lib/logger.js';
-import { csResoSchema } from './validation.js';
+import { csResoSchema, exportResiSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
@@ -25,20 +25,88 @@ const STATI_EXPORTABILI = ['approvato', 'spedito', 'completato'];
 router.use(authenticate);
 router.use(authorize('customer_service'));
 
-// GET /api/customer-service/richieste — resi da gestire.
+// GET /api/customer-service/richieste — resi da gestire (3 view + search).
 //   ?view=da_approvare (default) → resi in_revisione (coda approvazione).
-//   ?view=elaborati              → resi approvato/spedito/completato (già
-//                                 trasmessi ad ABC HUB): l'interno li ritrova
-//                                 qui per scaricare il file corriere RITGIO*.xls.
+//   ?view=approvati               → resi approvati (coda export/spedizione).
+//   ?view=inviati                 → resi spedito/completato (già inviati).
+//   ?view=elaborati (LEGACY)      → alias approvato+spedito+completato
+//                                  (backward compat con vecchi caller).
+//   Search (opzionali, combinati AND dentro il view):
+//     cldm     LIKE '%?%' su r.cldm
+//     num_reso exact int su r.num_reso
+//     data_da  ISO date YYYY-MM-DD → date(r.data_approvazione) >= date(?)
+//     data_a   ISO date YYYY-MM-DD → date(r.data_approvazione) <= date(?)
+//   Paginazione invariata. Ordine: da_approvare → r.created_at DESC;
+//   approvati/inviati/elaborati → r.data_approvazione DESC.
+//   Tutti i parametri utente entrano in SQL parametrizzati (?), mai concatenati.
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const CLDM_SEARCH_RE = /^[A-Za-z0-9_\-]{1,20}$/;
+
 router.get('/richieste', (req, res) => {
   const { page = '1', per_page = '20', view = 'da_approvare' } = req.query;
 
-  const where = view === 'elaborati'
-    ? "WHERE r.stato IN ('approvato','spedito','completato')"
-    : "WHERE r.stato = 'in_revisione'";
+  // 1. Risolve il filtro view (stato) come base del WHERE.
+  let statoCond;
+  let orderBy;
+  if (view === 'elaborati') {
+    // LEGACY: alias per backward compat con eventuali vecchi caller.
+    statoCond = "r.stato IN ('approvato','spedito','completato')";
+    orderBy = 'r.data_approvazione DESC';
+  } else if (view === 'approvati') {
+    statoCond = "r.stato = 'approvato'";
+    orderBy = 'r.data_approvazione DESC';
+  } else if (view === 'inviati') {
+    statoCond = "r.stato IN ('spedito','completato')";
+    orderBy = 'r.data_approvazione DESC';
+  } else {
+    // default (anche per valori non riconosciuti): da_approvare.
+    statoCond = "r.stato = 'in_revisione'";
+    orderBy = 'r.created_at DESC';
+  }
 
+  // 2. Costruisce condizioni di search dinamicamente (sempre parametrizzate).
+  const conds = [statoCond];
+  const params = [];
+  const { cldm, num_reso, data_da, data_a } = req.query;
+
+  if (cldm !== undefined && cldm !== '' && cldm !== null) {
+    const c = String(cldm);
+    if (!CLDM_SEARCH_RE.test(c)) {
+      return res.status(400).json({ error: 'Parametro cldm non valido' });
+    }
+    conds.push('r.cldm LIKE ?');
+    params.push(`%${c}%`);
+  }
+  if (num_reso !== undefined && num_reso !== '' && num_reso !== null) {
+    const n = Number.parseInt(num_reso, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 1_000_000) {
+      return res.status(400).json({ error: 'Parametro num_reso non valido' });
+    }
+    conds.push('r.num_reso = ?');
+    params.push(n);
+  }
+  if (data_da !== undefined && data_da !== '' && data_da !== null) {
+    const d = String(data_da);
+    if (!ISO_DATE_RE.test(d)) {
+      return res.status(400).json({ error: 'Parametro data_da non valido (YYYY-MM-DD)' });
+    }
+    conds.push('date(r.data_approvazione) >= date(?)');
+    params.push(d);
+  }
+  if (data_a !== undefined && data_a !== '' && data_a !== null) {
+    const d = String(data_a);
+    if (!ISO_DATE_RE.test(d)) {
+      return res.status(400).json({ error: 'Parametro data_a non valido (YYYY-MM-DD)' });
+    }
+    conds.push('date(r.data_approvazione) <= date(?)');
+    params.push(d);
+  }
+
+  const where = `WHERE ${conds.join(' AND ')}`;
+
+  // COUNT con stesso WHERE dinamico (stesso array params).
   const countStmt = db.prepare(`SELECT COUNT(*) as total FROM richieste_reso r ${where}`);
-  const { total } = countStmt.get();
+  const { total } = countStmt.get(...params);
 
   const limit = Math.min(parseInt(per_page) || 20, 100);
   const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
@@ -46,18 +114,75 @@ router.get('/richieste', (req, res) => {
   const dataStmt = db.prepare(
     `SELECT r.id, r.uuid, r.numero_ordine_esterno, r.motivo_reso, r.stato, r.note, r.note_venditore, r.data_approvazione, r.created_at,
             r.cldm, r.ddt_numero, r.num_colli, r.bda_autorizzazione,
+            r.num_reso, r.data_spedizione, r.corriere, r.corriere_nome,
             u.nome as richiedente_nome, u.azienda as richiedente_azienda,
             v.nome as venditore_nome
      FROM richieste_reso r
      JOIN users u ON r.user_id = u.id
      LEFT JOIN users v ON r.venditore_id = v.id
      ${where}
-     ORDER BY r.data_approvazione DESC
+     ORDER BY ${orderBy}
      LIMIT ? OFFSET ?`
   );
-  const data = dataStmt.all(limit, offset);
+  const data = dataStmt.all(...params, limit, offset);
 
   res.json({ data, total, page: Math.max(parseInt(page) || 1, 1), per_page: limit });
+});
+
+// POST /api/customer-service/richieste/export — export XLS multi-riga dei resi
+// selezionati (solo approvati) e mark spedito in un'azione atomica.
+//   Body: { uuids: string[] } (1..500 uuid validi).
+//   - Solo resi con stato='approvato' vengono marcati spediti: resi gia'
+//     spediti/completati/annullati sono skippati dal WHERE della SELECT e
+//     dell'UPDATE (idempotenti: non vengono riesportati ne' ri-marcati).
+//   - Transazione atomica: se una UPDATE fallisce, rollback (nessuno diventa
+//     spedito). L'XLS e' generato dopo il commit con i resi effettivamente
+//     marcati.
+//   - XLS: buildResiXls(rows) gia' itera rows in un unico worksheet multi-riga
+//     (riuso, nessuna modifica a xls-export.js).
+router.post('/richieste/export', (req, res) => {
+  const parsed = exportResiSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
+  }
+  const { uuids } = parsed.data;
+
+  const placeholders = uuids.map(() => '?').join(',');
+  // Solo approvati: resi gia' spediti/completati sono esclusi dall'export.
+  const resi = db.prepare(
+    `SELECT * FROM richieste_reso WHERE uuid IN (${placeholders}) AND stato = 'approvato'`
+  ).all(...uuids);
+
+  if (resi.length === 0) {
+    return res.status(404).json({ error: 'Nessun reso approvato selezionato' });
+  }
+
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    for (const r of resi) {
+      db.prepare(
+        `UPDATE richieste_reso SET stato = 'spedito', data_spedizione = ?, updated_at = datetime('now')
+         WHERE uuid = ? AND stato = 'approvato'`
+      ).run(now, r.uuid);
+    }
+  });
+  tx();
+
+  let buf, filename;
+  try {
+    ({ buf, filename } = buildResiXls(resi));
+  } catch (err) {
+    logger.error(`Errore generazione XLS export selezionati: ${err.message}`);
+    return res.status(500).json({ error: 'Errore generazione file corriere', detail: err.message });
+  }
+
+  logAudit(req.user.id, 'RESI_EXPORT_SELEZIONATI', { count: resi.length, uuids }, req);
+  logger.info(`Export selezionati: ${resi.length} resi → spedito da CS ${req.user.id}`);
+
+  const outName = filename.replace('RITGIO_', 'RITGIO_selezionati_');
+  res.setHeader('Content-Type', 'application/vnd.ms-excel');
+  res.setHeader('Content-Disposition', `attachment; filename="${outName}"`);
+  res.send(Buffer.from(buf));
 });
 
 // GET /api/customer-service/gls/giornaliero?data=YYYY-MM-DD (default oggi)

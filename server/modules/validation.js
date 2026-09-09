@@ -76,6 +76,13 @@ export const csResoSchema = z.object({
   note: z.string().max(2000).transform(s => sanitize(s).substring(0, 2000)).optional(),
 });
 
+// Task 4: export selezionati — POST /api/customer-service/richieste/export.
+// Lista di uuid di resi da esportare in un unico XLS multi-riga + mark spedito.
+// Limite 500 per evitare abuse/timeout; min 1 perche' l'azione e' no-op senza uuid.
+export const exportResiSchema = z.object({
+  uuids: z.array(z.string().uuid()).min(1).max(500),
+});
+
 export const createUserSchema = z.object({
   email: z.string().email().max(255).transform(sanitize),
   password: z.string().min(12).max(128),

@@ -76,6 +76,10 @@ addColumnIfMissing('richieste_reso', 'pv_cap', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_provincia', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_regione', 'TEXT');
 addColumnIfMissing('richieste_reso', 'num_reso', 'INTEGER');      // identificativo sequenziale 1..1.000.000
+// Task 4 (CS avanzata): data_spedizione impostata dal POST /richieste/export
+// quando l'interno esporta i resi approvati (XLS multi-riga + mark spedito).
+// NULL finche' il reso e' "approvato"; valorizzato allo switch in "spedito".
+addColumnIfMissing('richieste_reso', 'data_spedizione', 'TEXT');
 // F11: routing approvazioni per responsabile. resp_codice/resp_nome memorizzati
 // sul reso alla creazione (lookupPvByCldm) e usati dal filtro venditore.js.
 addColumnIfMissing('richieste_reso', 'resp_codice', 'TEXT');
