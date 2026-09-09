@@ -1,94 +1,161 @@
-# Piano: nuovo modello di inserimento reso (linee, corriere, PV manuale, num_reso sequenziale)
+# Nuovo modello di inserimento reso — Implementation Plan (revisionato post pre-flight)
 
-## Context
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-L'utente ha chiesto di modificare l'inserimento del reso nel sito-resi (:3002, dev). Oggi il form raccoglie **prodotti** (codice/descrizione/quantità/condizioni), un CLDM (da joinare a `punti_vendita.db`), e un numero BDA. Il file corriere `RITGIO*.xls` viene generato con PV risolto dal CLDM e "Num. Autorizzazione" = BDA.
+**Goal:** Rendere l'inserimento del PV manuale come fallback quando il cldm non è in anagrafica, preservando il routing F11 e le linee auto-popolate per i cldm noti.
 
-Nuove richieste (testo utente):
-- Cambia "inserimento prodotti" → **"inserimento linee"**: al posto del codice prodotto, il **nome** della linea; al posto di "quantità prodotto", il **numero pezzi** per linea. (I `colli`/pacchi per il corriere restano un campo separato in "dati ritiro", vedi decisione sotto.)
-- **Selezione del corriere**: GLS / NIEDDU / TRAMES / PARENA / ALTRI (con campo nome libero se ALTRI).
-- Nei dati di ritiro, promoter/venditore/interno **inseriscono manualmente** il PV: nome, indirizzo, provincia, regione, CAP, città. **Rimuovere l'autorizzazione BDA**.
-- Il programma **genera un numero sequenziale** (1, 2, 3… fino a 1.000.000) che identifica il reso (va nella colonna "Num. Autorizzazione" dell'XLS al posto della BDA).
+**Architecture:** `cldm` resta obbligatorio nel form. Su blur, lookup `anagrafica_pv`: se trovato → pv_*/linee/resp_codice derivati come oggi (PV mostrato read-only); se NON trovato → reveal condizionale di campi pv_* manuali (obbligatori) + messaggio live-region; il server accetta pv_* dal body solo quando il lookup fallisce (resp_codice NULL in quel caso). Tutto il resto del piano originale è già implementato.
 
-Decisioni confermate dall'utente:
-- **num_reso = sequenziale** (MAX+1, non casuale).
-- **corriere = solo registrato** sul reso (non cambia il formato XLS). Destinatario XLS **fisso** = stesso indirizzo di oggi (Via Industria s/n, Pozzolo Formigaro, AL) ma ragione sociale **"ABC SRL RESI"** al posto di "DPV FLEX SRL RESI".
+**Tech Stack:** Next 16 + Express custom server (sito-resi :3002 dev), SQLite better-sqlite3, zod, React (.tsx). UI in italiano, WCAG AA.
 
-Vincoli (NON rompere): dev-first, MAI restartare/toccare prod Express (:3001, pid 3545347, `.express.pid`). Modifiche a `server/modules/*.js` e `server/lib/*.js` richiedono restart del dev `node server.js` (NON hot-reload). UI in italiano, WCAG AA. Il file XLS è consumato dal corriere → mantenere le 16 colonne/ordine di `RITGIO2836.xls`.
+## Global Constraints
 
-## Modello dati nuovo (vs vecchio)
+- Dev-first, MAI restartare/toccare prod Express (:3001, pid 3545347, `.express.pid`). Modifiche `server/modules/*.js` e `server/lib/*.js` → restart dev :3002 (kill lsof:3002 + rm .next/dev/lock + node server.js). Modifiche `.tsx` → hot-reload.
+- UI in italiano. WCAG AA mandatory per ogni UI (gate a11y: consultare accessibility-lead prima di editare .tsx).
+- Backward compat: colonne vecchie (`prodotti, cldm, bda_autorizzazione, bda_hash, num_colli, ddt_numero, ddt_data`) restano; resi vecchi invariati.
+- Nessuna nuova dipendenza. Migrazioni idempotenti (addColumnIfMissing + CREATE TABLE IF NOT EXISTS), mai drop.
+- `num_reso` immutabile dopo creazione (generato solo all'INSERT).
+- Password/secret mai loggati/committati.
 
-| Campo | Vecchio | Nuovo |
-|---|---|---|
-| dettaglio reso | `prodotti` (codice/descr/qta/condizioni) | `linee` (**nome** + **numero_pezzi** per linea) |
-| PV | `cldm` (→ join punti_vendita.db) | `pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione` (manuale) |
-| colli totali | `num_colli` (singolo, in "dati ritiro corriere") | **invariato**: `num_colli` resta **singolo** nel fieldset "Dati per il ritiro del corriere" (NON per-linea). Le linee hanno `nome` + `numero_pezzi`; i `colli` (pacchi per il corriere) sono campo separato in ritiro. |
-| autorizzazione | `bda_autorizzazione` (BDA) | `num_reso` (sequenziale, generato server) |
-| corriere | — | `corriere` (enum) + `corriere_nome` (se ALTRI) |
-| BDA (campo alto) | `bda`/`bda_hash` | rimosso dal form |
+## Pre-flight findings (riconciliazione vs F10/F11)
 
-**Backward compat**: le colonne vecchie (`prodotti, cldm, num_colli, bda_autorizzazione, bda_hash`) restano nel DB. Resi vecchi le usano; resi nuovi usano le colonne nuove. Pagine dettaglio + XLS renderizzano con **fallback** (se `linee` assente → mostra `prodotti`; se `pv_nome` assente → `resolvePv(cldm)`; se `num_reso` assente → `bda_autorizzazione`).
+Il piano originale è già implementato al ~90%. NESSUNA migrazione DB necessaria (tutte le colonne esistono già in sito-resi `richieste_reso` e ABC HUB `resi_in_ingresso`).
 
-## File da modificare
+Già fatto (NO-OP, non toccare):
+- Colonne DB `linee, corriere, corriere_nome, pv_*, num_reso, resp_*` — presenti in entrambi i repo.
+- `linee` shape `{nome, numero_pezzi}` (LineeForm.tsx) — identica al piano.
+- `num_reso` sequenziale MAX+1 per OGNI reso (resi.js:108, query senza WHERE corriere) — non solo-GLS come diceva la memory F10 (stale).
+- Corriere enum + `corriere_nome` condizionale — già in form/validation/webhook.
+- `num_colli` singolo in "dati ritiro corriere".
+- Destinatario XLS "ABC SRL RESI" — già applicato (xls-export.js:23, resi-webhook.js:41).
+- `num_reso` come "Num. Autorizzazione" nell'XLS con precedenza su BDA (xls-export.js:77).
+- Webhook payload completo di tutti i campi nuovi (webhook.js:22-47).
+- 3 pagine dettaglio renderizzano linee + pv_* + badge "Reso N." (no BDA).
+- BDA assente dal form e dalle pagine dettaglio.
+- ABC HUB `resiWebhookSchema` accetta `pv_*` + `num_reso` (linee con numero_pezzi preservato).
 
-### 1. DB schema + migrazione (sito-resi) — `server/lib/db.js`
-Aggiungere (idempotente, pattern `addColumnIfMissing` già presente riga 54) a `richieste_reso`:
-`linee TEXT, corriere TEXT, corriere_nome TEXT, pv_nome TEXT, pv_indirizzo TEXT, pv_citta TEXT, pv_cap TEXT, pv_provincia TEXT, pv_regione TEXT, num_reso INTEGER`.
-Aggiornare anche `database/schema.sql` per i fresh install.
+UNICA parte residua: **PV manuale come fallback su cldm-non-trovato**.
 
-### 2. Validation — `server/modules/validation.js`
-`creaResoSchema`: sostituire `prodotti` con `linee` (array min 1 max 100 di `{ nome: string 1-100, numero_pezzi: int 1-9999 }` — nome + numero pezzi, niente colli per linea); aggiungere `corriere: enum(['GLS','NIEDDU','TRAMES','PARENA','ALTRI'])`, `corriere_nome: string max 100` (obbligatorio se corriere=ALTRI → refine zod), `pv_nome/pv_indirizzo/pv_citta/pv_cap/pv_provincia/pv_regione` (stringhe sanificate, obbligatori tranne regione opzionale); `ddt_numero/ddt_data` restano. **`num_colli` resta** come campo singolo opzionale (in "dati ritiro corriere", NON nelle linee). Rendere `prodotti/bda/bda_autorizzazione/cldm` opzionali nullable (vecchi PUT). `num_reso` NON nel body (generato server).
+## Decisione utente (raffinata)
 
-### 3. Server crea reso — `server/modules/resi.js` (POST `/`)
-- Generare `num_reso` sequenziale: `SELECT COALESCE(MAX(num_reso),0)+1 FROM richieste_reso`; se > 1.000.000 → wrap a 1. Inserire nelle nuove colonne. Restituire `num_reso` nella risposta 201 (l'UI lo mostra).
-- `statoIniziale` (macchina a stati 3-vie F4) **invariato**; auto-chiusura CS (webhook + audit) **invariata**, ma il payload webhook passa i campi nuovi.
-- PUT `/`: aggiornare anche le nuove colonne.
+> "l'inserimento manuale deve essere solo nel caso non trovasse il cldm."
 
-### 4. Webhook — `server/modules/webhook.js`
-`sendWebhook` payload: aggiungere `linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, num_reso`. Mantenere `prodotti/cldm/num_colli/bda_autorizzazione` (null per resi nuovi) per compatibilità ABC HUB.
+- `cldm` resta **OBBLIGATORIO** nel form (sempre inserito dall'utente).
+- Lookup `anagrafica_pv` su blur:
+  - **Trovato** → pv_* derivati (read-only), linee disponibili dal PV, resp_codice/resp_nome derivati (routing F11 attivo). Come oggi.
+  - **NON trovato** → reveal condizionale di campi pv_* **manuali obbligatori** (pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia; pv_regione opzionale) + messaggio live-region "CLDM non trovato in anagrafica — inserisci i dati del PV manualmente". linee: LineeForm free-text (lineeDisponibili vuote → l'utente usa 'Altro'). resp_codice NULL (reso visibile ai soli venditori generici, backward-compat F11).
+- Server: usa pv_* dal body SOLO quando lookup fallisce; resp_codice NULL in quel caso. Quando lookup ha successo, ignora eventuali pv_* del body (comportamento attuale).
 
-### 5. ABC HUB ricezione — `tracking-abc-italia-main/src/modules/resi-webhook.js`
-- `addColumnIfMissing` su `resi_in_ingresso`: `linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, num_reso INTEGER`.
-- `resiWebhookSchema` (zod): campi nuovi opzionali (backward compat). Aggiornare `linee` a `z.array(z.object({ nome: z.string().max(100), numero_pezzi: z.number().int().min(1).max(9999).optional() }))` cosicché `numero_pezzi` non venga strippato e venga persistito nel JSON della colonna `linee` (serve anche al dettaglio/audit ABC HUB; l'XLS non lo usa).
-- `INSERT`: includere i campi nuovi.
-- `CARRIER_DEST.ragione_sociale` default: `"DPV FLEX SRL RESI"` → `"ABC SRL RESI"` (stesso indirizzo/città/prov). Configurabile via `RESI_CARRIER_DEST_NAME` (già esiste).
-- `buildResiXls`: PV da `pv_nome/pv_indirizzo/pv_citta/pv_cap/pv_provincia` se presenti, **fallback** `resolvePv(cldm)` per resi vecchi; `num_colli` = `r.num_colli` (campo singolo, invariato — le linee non hanno colli); "Num. Autorizzazione" = `num_reso` se presente (testo `Aut. N. ${num_reso}`, BDA rimosso), fallback `bda_autorizzazione` (vecchio testo). Header 16 colonne **invariato**.
-- **Gotcha**: modifiche qui richiedono restart dell'**harness dev** :3011 (require cache), NON di prod :3001.
+## File map
 
-### 6. Lib XLS sito-resi — `server/lib/xls-export.js`
-Stessa logica di `buildResiXls` (PV manuale + fallback resolvePv, `num_colli` singolo, num_reso come autorizzazione, destinatario "ABC SRL RESI"). Usata dall'endpoint `GET /api/customer-service/richieste/:uuid/xls` (F7).
+| File | Modifica |
+|---|---|
+| `server/modules/resi.js` | POST+PUT: fallback pv_* dal body quando `lookupPvByCldm` null; rimuove il 400 hard "CLDM non presente"; valida pv_* essenziali quando lookup fallisce. |
+| `server/modules/validation.js` | NESSUNA modifica (pv_* già optional/nullable; cldm già required). Vincolo pv_* condizionale enforcement lato server. |
+| `server/lib/db.js` | NESSUNA modifica (colonne già presenti). |
+| `server/lib/xls-export.js` | NESSUNA modifica (già usa pv_* con fallback resolvePv(cldm)). |
+| `server/modules/webhook.js` | NESSUNA modifica (payload già completo). |
+| `src/components/ui/LineeForm.tsx` | NESSUNA modifica (shape già compatibile; lineeDisponibili vuote → free-text via Altro). |
+| `src/components/resi/ResoForm.tsx` | **MODIFICA** (a11y gated): reveal condizionale campi pv_* manuali su cldm-non-trovato + live-region + focus management. |
+| 3 pagine dettaglio | NESSUNA modifica (già renderizzano pv_*). |
+| ABC HUB `resi-webhook.js` | NESSUNA modifica. |
 
-### 7. UI form — `src/components/resi/ResoForm.tsx`
-- Rimuovere import `ProdottiForm` + campo `bda` in alto.
-- Sostituire con nuovo `LineeForm` (vedi 8).
-- Fieldset "Dati per il ritiro corriere": rimuovere `cldm`, `bda_autorizzazione`; **tenere `num_colli`** (campo singolo in questo fieldset); aggiungere `corriere` (select GLS/NIEDDU/TRAMES/PARENA/ALTRI) + `corriere_nome` (input condizionale se ALTRI); aggiungere PV manuale: `pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione`. Tenere `ddt_numero, ddt_data`.
-- POST body: inviare `linee, corriere, corriere_nome, pv_*, num_colli, ddt_numero, ddt_data`; non inviare `bda/bda_autorizzazione/cldm/prodotti`.
-- Mostrare `num_reso` nel toast di successo ("Reso N. {num_reso} creato").
+---
 
-### 8. Nuovo componente — `src/components/ui/LineeForm.tsx`
-Pattern identico a `ProdottiForm` (fieldset per riga, `<label htmlFor>`, add/remove button ≥44px, `aria-label`). Riga = `{ nome: string, numero_pezzi: number }` (nome + numero pezzi). Titolo "Linee ({n})". Aggiungi linea → `{ nome: '', numero_pezzi: 1 }`.
+## Task 1: Backend — fallback pv_* manuali su cldm non trovato
 
-### 9. Pagine dettaglio (3) — renderizzano linee + campi nuovi
-`src/app/dashboard/richieste/[id]/page.tsx`, `src/app/venditore/richieste/[id]/page.tsx`, `src/app/customer-service/richieste/[id]/page.tsx`:
-- Sezione "Linee" (se `linee` presente) al posto di "Prodotti"; ogni riga mostra `nome` + `numero_pezzi`; **fallback** a `prodotti` per resi vecchi.
-- Card "Dati ritiro corriere": mostrare `pv_nome/indirizzo/città/cap/provincia/regione` (o cldm per vecchi), `corriere` (+ `corriere_nome`), `num_reso` (badge "Reso N. {num_reso}"), `ddt_numero/ddt_data`. Rimuovere riferimento BDA.
+**Files:**
+- Modify: `server/modules/resi.js` (POST `/` righe ~76-89 lookup block; PUT `/` riga ~277 lookup block)
 
-### 10. A11y (WCAG AA) — tutte le UI sopra
-`<label htmlFor>` per ogni input/select; `<select>` nativo per corriere; input condizionale ALTRI con `aria-expanded`/`aria-controls` gestito via stato (mostrare/nascondere); touch target ≥44px; live region per errori; focus management su add/remove linea. Consultare accessibility-lead prima di editare i .tsx (edit-gate).
+**Interfaces:**
+- Consumes: `lookupPvByCldm(cldm)` da `server/lib/anagrafica.js` (ritorna `{nome, indirizzo, citta, cap, provincia, regione, resp_codice, resp_nome, linee[], ...}` o `null`).
+- Produces: POST `/` e PUT `/` accettano un cldm non in anagrafica purché il body contenga pv_* essenziali; memorizzano pv_* dal body e resp_codice=NULL.
 
-## Verifica end-to-end (dev :3002 + harness :3011, no prod :3001)
+**Stato attuale (da preservare):** resi.js POST riga 76-89 fa `const pv = lookupPvByCldm(cldm); if (!pv) return res.status(400).json({ error: 'CLDM non presente in anagrafica...', cldm });` poi deriva pvNome..respNome dal lookup. PUT riga ~277 riapplica lookupPvByCldm se cldm presente e sovrascrive pv_*/resp_*.
 
-1. Restart dev sito-resi (`kill -9 <pid node dev>`, `rm .next/dev/lock`, `node server.js`) e restart harness :3011.
-2. curl POST `/api/resi` come interno (auto-chiuso) con payload nuovo (linee + corriere=GLS + PV manuale) → 201, `stato=approvato`, `num_reso` sequenziale (1, poi 2…).
-3. GET dettaglio → ritorna `linee, corriere, pv_*, num_reso`.
-4. GET `/api/customer-service/richieste/:uuid/xls` → 200, BIFF8; verifica riga: PV manuale (nome/indirizzo/città/cap/prov inseriti), colli = `num_colli` (campo singolo), "Num. Autorizzazione" = `Aut. N. {num_reso}`, destinatario = "ABC SRL RESI / Via Industria s/n / Pozzolo Formigaro / AL".
-5. Verifica webhook → harness inserisce reso #N con campi nuovi; auto-export su disco usa PV manuale + destinatario "ABC SRL RESI".
-6. Backward compat: GET dettaglio + XLS di un **reso vecchio** (prodotti/cldm/bda_autorizzazione) → fallback funziona ( mostra prodotti, PV da cldm, autorizzazione BDA).
-7. 3 pagine dettaglio + ResoForm + nuova pagina compilano (HTTP 200).
-8. num_reso: due inserimenti consecutivi → 1 e 2 (sequenziale).
-9. A11y: keyboard nav sul form (tab tra campi, add/remove linee, select corriere → focus su input ALTRI), contrasto, label.
+- [ ] **Step 1: POST — fallback pv_* dal body quando lookup null**
 
-## Out of scope
-- Formati XLS diversi per corriere (confermato: corriere solo registrato, formato unico).
-- Backfill num_reso su resi vecchi (restano NULL, mostrati come "—").
-- Restart prod Express (lascia il default ABC HUB "ABC SRL RESI" attivo dal prossimo restart prod, a discrezione utente).
+Sostituire il blocco `if (!pv) return res.status(400)...` con: se `pv` trovato → usa lookup (pvNome=pv.nome||null, ..., respCodice=pv.resp_codice||null, respNome=pv.resp_nome||null) [invariato]. Se `!pv` → leggi pv_* dal body validated (`pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione`), imposta `respCodice=null, respNome=null`, e valida i campi essenziali: se manca uno tra `pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia` → `return res.status(400).json({ error: 'CLDM non trovato in anagrafica: inserisci manualmente i dati del PV (nome, indirizzo, città, CAP, provincia).', cldm, pv_not_found: true })`. pv_regione resta opzionale. Mantenere l'INSERT a 27 colonne/placeholder/arg invariato (i valori pv_*/resp_* ora possono venire dal body).
+
+- [ ] **Step 2: PUT — stesso fallback**
+
+Nel PUT, dove riapplica `lookupPvByCldm(cldm)`: se lookup trovato → usa lookup (invariato). Se null → usa pv_* dal body (se forniti), resp_codice/resp_nome = null. Non 400are (il PUT può aggiornare un reso il cui cldm non è in anagrafica). Mantenere il SET a 22 colonne invariato.
+
+- [ ] **Step 3: Test manuale dev**
+
+Restart dev :3002. Test A (cldm noto, es. uno presente in anagrafica_pv): POST con cldm + linee + corriere → 201, pv_* derivati dal lookup, resp_codice popolato. Test B (cldm NON in anagrafica, es. 'ZZZFAKE'): POST con cldm + pv_* manuali completi + linee + corriere → 201, pv_* dal body, resp_codice NULL. Test C (cldm non in anagrafica SENZA pv_*): POST → 400 `{pv_not_found:true}`. Verifica GET dettaglio dei resi B ritorna pv_* manuali.
+
+- [ ] **Step 4: Commit**
+
+`git add server/modules/resi.js && git commit -m "feat(resi): fallback PV manuale quando cldm non in anagrafica"`
+
+---
+
+## Task 2: UI — reveal condizionale campi PV manuali su cldm non trovato (a11y gated)
+
+**Files:**
+- Modify: `src/components/resi/ResoForm.tsx` (sezione CLDM/PV riga ~209-273; body POST riga ~75-86)
+
+**a11y gate:** Consultare accessibility-lead PRIMA di editare (hook PreToolUse blocca Edit/Write su .tsx). Applicare: aria-specialist (reveal condizionale aria-expanded/aria-controls), live-region-controller (messaggio stato), forms-specialist (label, required, error), keyboard-navigator (focus al primo campo pv_*, tab order), contrast-master (>=4.5:1). La guida a11y va incorporata nel brief dell'implementer.
+
+**Interfaces:**
+- Consumes: stato lookup PV (trovato/non-trovato) già calcolato su blur del campo cldm.
+- Produces: body POST include `pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione` SOLO quando lookup fallisce (PV manuale); quando lookup ha successo, il body NON include pv_* (il server deriva). LineeForm riceve `lineeDisponibili=[]` quando lookup fallisce (free-text via Altro).
+
+**Stato attuale:** ResoForm.tsx riga 209-273 ha il campo cldm con datalist + lookup on blur che mostra il PV risolto in read-only. Body POST (riga 75-86) invia `cldm, motivo_reso, note, linee, corriere, corriere_nome, ddt_numero, ddt_data, num_colli` (NO pv_*).
+
+- [ ] **Step 1: Consultare accessibility-lead e produrre guida a11y**
+
+Prima di editare: delegare a accessibility-lead (o leggere gli specialist agent .md e applicare le checklist) per il reveal condizionale. Documentare: aria-expanded/aria-controls sul trigger, role="status" aria-live="polite" per il messaggio "CLDM non trovato", label htmlFor per ogni pv_*, aria-required, focus management (spostare il focus al primo campo pv_* quando il reveal si attiva), restore focus quando torna trovato, touch target, contrasto. Incorporare nel brief implementer.
+
+- [ ] **Step 2: Stato "pv non trovato" + reveal condizionale**
+
+Aggiungere stato (es. `pvNotFound: boolean`). Sul blur del cldm, dopo il lookup: se trovato → `pvNotFound=false` + mostra PV risolto read-only (come oggi) + lineeDisponibili=pv.linee. Se non trovato → `pvNotFound=true` + render condizionale di un fieldset "Dati PV (inserimento manuale — CLDM non in anagrafica)" con i 6 input (pv_nome*, pv_indirizzo*, pv_citta*, pv_cap*, pv_provincia*, pv_regione). Messaggio live-region role="status" aria-live="polite" "CLDM non trovato in anagrafica: inserisci i dati del PV manualmente". Spostare il focus al primo input (pv_nome) all'attivazione. Quando l'utente corregge il cldm e il lookup torna OK → nascondere il fieldset + ripulire i pv_* manuali dallo stato + live-region "PV trovato in anagrafica".
+
+- [ ] **Step 3: Body POST condizionale**
+
+Nel body POST: se `pvNotFound` → includere `pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione`. Altrimenti NON inviarli (server deriva). Validazione client: se pvNotFound, bloccare il submit se manca uno dei 5 campi obbligatori (messaggio errore live-region).
+
+- [ ] **Step 4: Test manuale dev + a11y**
+
+Compilazione HTTP 200 delle pagine. Test keyboard: tab dal cldm → lookup fallito → focus si sposta su pv_nome? Tab attraverso i 6 campi. Test screen-reader (NVDA/VoiceOver se disponibile) sul messaggio live-region. Test contrasto. Test flusso: cldm noto (no reveal) + cldm finto (reveal + submit con pv_* manuali → 201) + cldm finto senza pv_* (submit bloccato client).
+
+- [ ] **Step 5: Commit**
+
+`git add src/components/resi/ResoForm.tsx && git commit -m "feat(ResoForm): reveal condizionale PV manuale su cldm non trovato (a11y)"`
+
+---
+
+## Task 3: e2e + final review + memory + finishing
+
+- [ ] **Step 1: e2e dev (:3002, no prod)**
+
+1. Restart dev :3002.
+2. POST come store_account con cldm NOTO + linee + corriere=GLS → 201, stato=in_attesa, num_reso sequenziale, pv_* derivati, resp_codice popolato.
+3. POST come store_account con cldm FINTO + pv_* manuali + linee + corriere → 201, pv_* manuali, resp_codice NULL.
+4. GET dettaglio reso (3) → ritorna pv_* manuali.
+5. GET `/api/customer-service/richieste/:uuid/xls` → 200, riga con PV manuale + "Num. Autorizzazione" = num_reso + destinatario "ABC SRL RESI".
+6. Routing F11: reso con cldm noto (resp_codice=M6) → veduto dal venditore M6; reso con cldm finto (resp NULL) → NON veduto dai venditori assegnati, veduto dai generici.
+7. Backward compat: reso vecchio (prodotti/cldm/bda_autorizzazione) → dettaglio + XLS con fallback (prodotti, PV da cldm, autorizzazione BDA) — invariato.
+8. A11y: keyboard nav + live-region sul form.
+
+- [ ] **Step 2: Final whole-branch review (opus)**
+
+Dispatch final reviewer su tutto il branch feature/nuovo-modello-reso (diff da BASE b9270ab).
+
+- [ ] **Step 3: Memory + ledger**
+
+Aggiorna memory (correggi memory F10 stale: num_reso non è solo-GLS; aggiungi memory nuovo-modello-reso PV-fallback). Finalizza ledger.
+
+- [ ] **Step 4: Finishing**
+
+superpowers:finishing-a-development-branch → menu 3 opzioni (merge locale a feature/f11 / push+PR / keep as-is). Attesa scelta utente.
+
+---
+
+## Self-review
+
+- Spec coverage: PV manuale fallback = Task 1 (backend) + Task 2 (UI). num_reso/corriere/linee/destinatario già fatti (no-op documentato). e2e = Task 3. ✅
+- Placeholder: nessuno. Step con codice preciso. ✅
+- Type consistency: pv_* field names coerenti tra validation.js (opzionali), resi.js (fallback), ResoForm (body). ✅
+- Conflitto piano-vs-F11 risolto dalla decisione utente (cldm obbligatorio + fallback). ✅
