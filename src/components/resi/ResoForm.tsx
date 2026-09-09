@@ -62,27 +62,93 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
   // quando l'utente digita velocemente o cambia campo).
   const cldmCorrenteRef = useRef('');
 
+  // Fallback PV manuale: attivo quando il CLDM non è in anagrafica (lookup fail).
+  const [pvNotFound, setPvNotFound] = useState(false);
+  const [pvNome, setPvNome] = useState('');
+  const [pvIndirizzo, setPvIndirizzo] = useState('');
+  const [pvCitta, setPvCitta] = useState('');
+  const [pvCap, setPvCap] = useState('');
+  const [pvProvincia, setPvProvincia] = useState('');
+  const [pvRegione, setPvRegione] = useState('');
+  const [pvErrors, setPvErrors] = useState<Record<string, string>>({});
+  // Messaggio della live region persistente (annuncio esito lookup PV).
+  const [pvLookupMsg, setPvLookupMsg] = useState('');
+  const pvNomeRef = useRef<HTMLInputElement>(null);
+  const pvIndirizzoRef = useRef<HTMLInputElement>(null);
+  const pvCittaRef = useRef<HTMLInputElement>(null);
+  const pvCapRef = useRef<HTMLInputElement>(null);
+  const pvProvinciaRef = useRef<HTMLInputElement>(null);
+
+  // Ripulisce i campi PV manuali + i relativi errori. Usato quando il lookup
+  // torna OK (utente ha corretto il CLDM) o quando il CLDM viene svuotato.
+  function clearPvManuali() {
+    setPvNome(''); setPvIndirizzo(''); setPvCitta(''); setPvCap(''); setPvProvincia(''); setPvRegione('');
+    setPvErrors({});
+  }
+
+  // Pulisce l'errore di un singolo campo PV manuale (onChange).
+  function clearPvError(campo: string) {
+    setPvErrors((p) => {
+      if (!p[campo]) return p;
+      const n = { ...p }; delete n[campo]; return n;
+    });
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError('');
 
+    // Fallback PV manuale: se il CLDM non è in anagrafica, i 5 campi essenziali
+    // sono obbligatori lato client (il server li validerebbe con 400 pv_not_found).
+    if (pvNotFound) {
+      const errs: Record<string, string> = {};
+      if (!pvNome.trim()) errs.pv_nome = 'Inserisci il nome del PV.';
+      if (!pvIndirizzo.trim()) errs.pv_indirizzo = "Inserisci l'indirizzo.";
+      if (!pvCitta.trim()) errs.pv_citta = 'Inserisci la città.';
+      if (!pvCap.trim()) errs.pv_cap = 'Inserisci il CAP.';
+      if (!pvProvincia.trim()) errs.pv_provincia = 'Inserisci la provincia.';
+      if (Object.keys(errs).length > 0) {
+        setPvErrors(errs);
+        setError('Completa i dati del PV obbligatori prima di inviare.');
+        const firstRef = errs.pv_nome ? pvNomeRef
+          : errs.pv_indirizzo ? pvIndirizzoRef
+          : errs.pv_citta ? pvCittaRef
+          : errs.pv_cap ? pvCapRef
+          : pvProvinciaRef;
+        requestAnimationFrame(() => firstRef.current?.focus());
+        setLoading(false);
+        return;
+      }
+    }
+
     try {
       const token = localStorage.getItem('access_token');
+      const body: Record<string, unknown> = {
+        cldm,
+        motivo_reso: motivo,
+        note: note || undefined,
+        linee,
+        corriere,
+        corriere_nome: corriere === 'ALTRI' ? corriereNome : null,
+        ddt_numero: ddtNumero || null,
+        ddt_data: ddtData || null,
+        num_colli: numColli ? Number(numColli) : null,
+      };
+      // Invia i pv_* solo nel fallback manuale; se il lookup è OK il server
+      // deriva i pv_* dal cldm (ignora eventuali pv_* del body).
+      if (pvNotFound) {
+        body.pv_nome = pvNome.trim();
+        body.pv_indirizzo = pvIndirizzo.trim();
+        body.pv_citta = pvCitta.trim();
+        body.pv_cap = pvCap.trim();
+        body.pv_provincia = pvProvincia.trim();
+        body.pv_regione = pvRegione.trim() || undefined;
+      }
       const res = await fetch('/api/resi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          cldm,
-          motivo_reso: motivo,
-          note: note || undefined,
-          linee,
-          corriere,
-          corriere_nome: corriere === 'ALTRI' ? corriereNome : null,
-          ddt_numero: ddtNumero || null,
-          ddt_data: ddtData || null,
-          num_colli: numColli ? Number(numColli) : null,
-        }),
+        body: JSON.stringify(body),
       });
 
       const data = await res.json();
@@ -132,6 +198,9 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       setPv(null);
       setLineePv([]);
       setCldmError('');
+      setPvNotFound(false);
+      setPvLookupMsg('');
+      clearPvManuali();
       return;
     }
     try {
@@ -140,9 +209,15 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       });
       if (code !== cldmCorrenteRef.current) return; // stale: l'utente ha cambiato cldm
       if (!res.ok) {
+        // CLDM non in anagrafica: reveal dei campi PV manuali (fallback).
+        // resp_* restano NULL lato server (nessun routing responsabile).
         setPv(null);
         setLineePv([]);
         setCldmError('CLDM non trovato in anagrafica');
+        setPvNotFound(true);
+        setPvLookupMsg('CLDM non trovato in anagrafica: inserisci i dati del PV manualmente');
+        // Sposta il focus sul primo campo manuale dopo il render del fieldset.
+        requestAnimationFrame(() => pvNomeRef.current?.focus());
         return;
       }
       const data = await res.json();
@@ -150,11 +225,17 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       setPv(data.pv);
       setLineePv(data.pv.linee || []);
       setCldmError('');
+      // Lookup OK: chiudi il fieldset manuale e ripulisci i dati inseriti.
+      setPvNotFound(false);
+      setPvLookupMsg(`Punto vendita trovato: ${data.pv.nome}`);
+      clearPvManuali();
     } catch {
       if (code !== cldmCorrenteRef.current) return;
       setCldmError('Errore caricamento PV');
       setPv(null);
       setLineePv([]);
+      setPvNotFound(false);
+      setPvLookupMsg('');
     }
   }
 
@@ -266,9 +347,107 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
             </dl>
           </div>
         )}
-        {/* Live region: annuncia il PV trovato (content caricato async). */}
-        <div role="status" aria-live="polite" className="sr-only">
-          {pv ? `Punto vendita trovato: ${pv.nome}` : cldmError || ''}
+        {/* Fallback PV manuale: reveal condizionale reattivo al lookup
+            (niente disclosure button). Visibile solo quando pvNotFound. */}
+        {pvNotFound && (
+          <fieldset className="mt-3 p-3 border border-gray-700 rounded-xl space-y-3">
+            <legend className="px-1 text-sm font-semibold text-gray-200">
+              Dati PV (inserimento manuale — CLDM non in anagrafica)
+            </legend>
+            <p id="pv-manual-help" className="text-xs text-gray-400">
+              Il CLDM non è presente in anagrafica. Inserisci manualmente i dati del punto vendita.
+              I campi contrassegnati con * sono obbligatori.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="pv_nome" className="block text-sm font-medium text-gray-300 mb-1.5">
+                  Nome PV <span aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="pv_nome" name="pv_nome" type="text" required aria-required="true"
+                  autoComplete="organization" maxLength={120} className="input-mobile"
+                  ref={pvNomeRef} value={pvNome}
+                  onChange={(e) => { setPvNome(e.target.value); clearPvError('pv_nome'); }}
+                  aria-invalid={!!pvErrors.pv_nome}
+                  aria-describedby={pvErrors.pv_nome ? 'pv_nome-err' : 'pv-manual-help'}
+                />
+                {pvErrors.pv_nome && <p id="pv_nome-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_nome}</p>}
+              </div>
+              <div>
+                <label htmlFor="pv_indirizzo" className="block text-sm font-medium text-gray-300 mb-1.5">
+                  Indirizzo <span aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="pv_indirizzo" name="pv_indirizzo" type="text" required aria-required="true"
+                  autoComplete="street-address" maxLength={120} className="input-mobile"
+                  ref={pvIndirizzoRef} value={pvIndirizzo}
+                  onChange={(e) => { setPvIndirizzo(e.target.value); clearPvError('pv_indirizzo'); }}
+                  aria-invalid={!!pvErrors.pv_indirizzo}
+                  aria-describedby={pvErrors.pv_indirizzo ? 'pv_indirizzo-err' : 'pv-manual-help'}
+                />
+                {pvErrors.pv_indirizzo && <p id="pv_indirizzo-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_indirizzo}</p>}
+              </div>
+              <div>
+                <label htmlFor="pv_citta" className="block text-sm font-medium text-gray-300 mb-1.5">
+                  Città <span aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="pv_citta" name="pv_citta" type="text" required aria-required="true"
+                  autoComplete="address-level2" maxLength={80} className="input-mobile"
+                  ref={pvCittaRef} value={pvCitta}
+                  onChange={(e) => { setPvCitta(e.target.value); clearPvError('pv_citta'); }}
+                  aria-invalid={!!pvErrors.pv_citta}
+                  aria-describedby={pvErrors.pv_citta ? 'pv_citta-err' : 'pv-manual-help'}
+                />
+                {pvErrors.pv_citta && <p id="pv_citta-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_citta}</p>}
+              </div>
+              <div>
+                <label htmlFor="pv_cap" className="block text-sm font-medium text-gray-300 mb-1.5">
+                  CAP <span aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="pv_cap" name="pv_cap" type="text" inputMode="numeric" required aria-required="true"
+                  autoComplete="postal-code" maxLength={10} className="input-mobile"
+                  ref={pvCapRef} value={pvCap}
+                  onChange={(e) => { setPvCap(e.target.value); clearPvError('pv_cap'); }}
+                  aria-invalid={!!pvErrors.pv_cap}
+                  aria-describedby={pvErrors.pv_cap ? 'pv_cap-err' : 'pv-manual-help'}
+                />
+                {pvErrors.pv_cap && <p id="pv_cap-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_cap}</p>}
+              </div>
+              <div>
+                <label htmlFor="pv_provincia" className="block text-sm font-medium text-gray-300 mb-1.5">
+                  Provincia <span aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="pv_provincia" name="pv_provincia" type="text" required aria-required="true"
+                  autoComplete="address-level1" maxLength={40} className="input-mobile"
+                  ref={pvProvinciaRef} value={pvProvincia}
+                  onChange={(e) => { setPvProvincia(e.target.value); clearPvError('pv_provincia'); }}
+                  aria-invalid={!!pvErrors.pv_provincia}
+                  aria-describedby={pvErrors.pv_provincia ? 'pv_provincia-err' : 'pv-manual-help'}
+                />
+                {pvErrors.pv_provincia && <p id="pv_provincia-err" role="alert" className="text-sm text-red-300 mt-1">{pvErrors.pv_provincia}</p>}
+              </div>
+              <div>
+                <label htmlFor="pv_regione" className="block text-sm font-medium text-gray-300 mb-1.5">
+                  Regione
+                </label>
+                <input
+                  id="pv_regione" name="pv_regione" type="text"
+                  autoComplete="address-level1" maxLength={60} className="input-mobile"
+                  value={pvRegione}
+                  onChange={(e) => setPvRegione(e.target.value)}
+                  aria-describedby="pv-manual-help"
+                />
+              </div>
+            </div>
+          </fieldset>
+        )}
+        {/* Live region persistente (sempre in DOM, contenuto via state):
+            annuncia l'esito del lookup PV a screen reader. Mai render condizionale. */}
+        <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          {pvLookupMsg}
         </div>
       </div>
 
@@ -433,7 +612,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
         {loading ? 'Invio della richiesta in corso.' : ''}
       </div>
 
-      <button type="submit" disabled={loading || !motivo || !corriere || !cldm || !pv} className="btn-mobile">
+      <button type="submit" disabled={loading || !motivo || !corriere || !cldm || (!pv && !pvNotFound)} className="btn-mobile">
         {loading ? (
           <span className="flex items-center gap-2">
             <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
