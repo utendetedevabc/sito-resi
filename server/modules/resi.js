@@ -70,23 +70,49 @@ router.post('/', (req, res) => {
   // bda_autorizzazione in chiaro = numero BDA (per il manifest ritiri corriere)
   const bdaAutorizzazione = parsed.data.bda_autorizzazione || bda || null;
 
-  // F10: il client invia solo cldm; pv_* derivano dall'anagrafica (autorevole).
-  // Ignoriamo eventuali pv_* arrivati dal body (lo schema ora li accetta solo per
-  // backward compat ma non sono piu' usati come sorgente).
+  // F10: il client invia cldm; pv_* derivano dall'anagrafica (autorevole) quando
+  // il cldm e' presente. Se il cldm NON e' in anagrafica (PV manuale fallback),
+  // i pv_* vengono letti dal body (inseriti manualmente dall'utente) e
+  // resp_codice/resp_nome restano NULL (nessun routing per responsabile).
   const pv = lookupPvByCldm(cldm);
-  if (!pv) {
-    return res.status(400).json({ error: 'CLDM non presente in anagrafica. Aggiornare l\'anagrafica o verificare il codice.', cldm });
+  let pvNome, pvIndirizzo, pvCitta, pvCap, pvProvincia, pvRegione, respCodice, respNome;
+  if (pv) {
+    // Path felice: cldm in anagrafica — usa lookup (invariato).
+    pvNome = pv.nome || null;
+    pvIndirizzo = pv.indirizzo || null;
+    pvCitta = pv.citta || null;
+    pvCap = pv.cap || null;
+    pvProvincia = pv.provincia || null;
+    pvRegione = pv.regione || null;
+    // F11: routing per responsabile. Memorizzati per tutti i resi (anche
+    // CS/venditore) — utile per audit/display e filtro venditore (in_attesa).
+    respCodice = pv.resp_codice || null;
+    respNome = pv.resp_nome || null;
+  } else {
+    // Fallback PV manuale: cldm non in anagrafica. Richiede pv_* essenziali dal
+    // body. pv_regione resta opzionale. resp_* NULL (nessun routing responsabile).
+    const mancanti = [];
+    if (!pv_nome) mancanti.push('pv_nome');
+    if (!pv_indirizzo) mancanti.push('pv_indirizzo');
+    if (!pv_citta) mancanti.push('pv_citta');
+    if (!pv_cap) mancanti.push('pv_cap');
+    if (!pv_provincia) mancanti.push('pv_provincia');
+    if (mancanti.length > 0) {
+      return res.status(400).json({
+        error: 'CLDM non trovato in anagrafica: inserisci manualmente i dati del PV (nome, indirizzo, città, CAP, provincia).',
+        cldm,
+        pv_not_found: true,
+      });
+    }
+    pvNome = pv_nome;
+    pvIndirizzo = pv_indirizzo;
+    pvCitta = pv_citta;
+    pvCap = pv_cap;
+    pvProvincia = pv_provincia;
+    pvRegione = pv_regione || null;
+    respCodice = null;
+    respNome = null;
   }
-  const pvNome = pv.nome || null;
-  const pvIndirizzo = pv.indirizzo || null;
-  const pvCitta = pv.citta || null;
-  const pvCap = pv.cap || null;
-  const pvProvincia = pv.provincia || null;
-  const pvRegione = pv.regione || null;
-  // F11: routing per responsabile. Memorizzati per tutti i resi (anche
-  // CS/venditore) — utile per audit/display e filtro venditore (in_attesa).
-  const respCodice = pv.resp_codice || null;
-  const respNome = pv.resp_nome || null;
 
   // Scadenza 30 giorni
   const scadenza = new Date();
@@ -261,10 +287,11 @@ router.put('/:uuid', (req, res) => {
   const bdaHash = bda ? sha256(bda) : null;
   const bdaAutorizzazione = parsed.data.bda_autorizzazione || bda || null;
 
-  // F10: se cldm presente, pv_* derivano dall'anagrafica (autorevole); i pv_*
-  // del body sono ora opzionali e usati solo come fallback. Se la lookup
-  // fallisce (pv null) NON sovrascriviamo i pv_* esistenti: manteniamo i
-  // valori del body (che potrebbero essere undefined/null su PUT vecchi).
+  // F10/F12: se cldm presente e in anagrafica, pv_* derivano dal lookup
+  // (autorevole). Se cldm presente ma NON in anagrafica (PV manuale fallback)
+  // usiamo i pv_* dal body senza 400are: il PUT puo' aggiornare un reso il cui
+  // cldm non e' in anagrafica, e resp_* restano NULL. Se cldm assente, i pv_*
+  // del body (eventualmente undefined/null) restano invariati.
   // Nota: i PUT di resi pre-F9 (senza cldm/linee/corriere) non sono supportati
   // dal form nuovo (ResoForm manda sempre cldm+linee+corriere) — limitazione
   // accettata da F9.
@@ -285,6 +312,7 @@ router.put('/:uuid', (req, res) => {
       respCodice = pv.resp_codice || null;
       respNome = pv.resp_nome || null;
     }
+    // PV manuale fallback: pv_* dal body (già impostati sopra), resp_*=null.
   }
 
   try {
