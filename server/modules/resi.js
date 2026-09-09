@@ -83,6 +83,10 @@ router.post('/', (req, res) => {
   const pvCap = pv.cap || null;
   const pvProvincia = pv.provincia || null;
   const pvRegione = pv.regione || null;
+  // F11: routing per responsabile. Memorizzati per tutti i resi (anche
+  // CS/venditore) — utile per audit/display e filtro venditore (in_attesa).
+  const respCodice = pv.resp_codice || null;
+  const respNome = pv.resp_nome || null;
 
   // Scadenza 30 giorni
   const scadenza = new Date();
@@ -116,8 +120,8 @@ router.post('/', (req, res) => {
       `INSERT INTO richieste_reso
        (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, note, prodotti, data_scadenza, stato, data_approvazione,
         cldm, ddt_numero, ddt_data, num_colli, bda_autorizzazione,
-        linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, num_reso)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, resp_codice, resp_nome, num_reso)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const info = stmt.run(
       uuid,
@@ -151,6 +155,8 @@ router.post('/', (req, res) => {
       pvCap,
       pvProvincia,
       pvRegione,
+      respCodice,
+      respNome,
       numReso
     );
 
@@ -264,6 +270,9 @@ router.put('/:uuid', (req, res) => {
   // accettata da F9.
   let pvNome = pv_nome || null, pvIndirizzo = pv_indirizzo || null, pvCitta = pv_citta || null,
       pvCap = pv_cap || null, pvProvincia = pv_provincia || null, pvRegione = pv_regione || null;
+  // F11: resp_* seguono lo stesso pattern di pv_* (default null, valorizzati
+  // dal lookup del PV quando cldm presente). Base per il filtro venditore.
+  let respCodice = null, respNome = null;
   if (cldm) {
     const pv = lookupPvByCldm(cldm);
     if (pv) {
@@ -273,6 +282,8 @@ router.put('/:uuid', (req, res) => {
       pvCap = pv.cap || pvCap;
       pvProvincia = pv.provincia || pvProvincia;
       pvRegione = pv.regione || pvRegione;
+      respCodice = pv.resp_codice || null;
+      respNome = pv.resp_nome || null;
     }
   }
 
@@ -282,7 +293,8 @@ router.put('/:uuid', (req, res) => {
        numero_ordine_esterno = ?, bda_hash = ?, motivo_reso = ?, note = ?, prodotti = ?, updated_at = datetime('now'),
        cldm = ?, ddt_numero = ?, ddt_data = ?, num_colli = ?, bda_autorizzazione = ?,
        linee = ?, corriere = ?, corriere_nome = ?,
-       pv_nome = ?, pv_indirizzo = ?, pv_citta = ?, pv_cap = ?, pv_provincia = ?, pv_regione = ?
+       pv_nome = ?, pv_indirizzo = ?, pv_citta = ?, pv_cap = ?, pv_provincia = ?, pv_regione = ?,
+       resp_codice = ?, resp_nome = ?
        WHERE uuid = ?`
     ).run(
       // numero_ordine_esterno NOT NULL su DB esistenti: '' invece di undefined.
@@ -305,6 +317,8 @@ router.put('/:uuid', (req, res) => {
       pvCap,
       pvProvincia,
       pvRegione,
+      respCodice,
+      respNome,
       uuid
     );
 
