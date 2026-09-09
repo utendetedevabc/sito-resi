@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, ReactNode } from 'react';
+import { useState, useRef, useEffect, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import CameraUpload from '@/components/ui/CameraUpload';
 import LineeForm from '@/components/ui/LineeForm';
@@ -31,18 +31,24 @@ interface Props {
 export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }: Props) {
   const router = useRouter();
   const { addToast } = useToast();
-  const [numeroOrdine, setNumeroOrdine] = useState('');
   const [motivo, setMotivo] = useState('');
   const [note, setNote] = useState('');
   const [linee, setLinee] = useState<Linea[]>([{ nome: '', numero_pezzi: 1 }]);
   const [corriere, setCorriere] = useState('');
   const [corriereNome, setCorriereNome] = useState('');
-  const [pvNome, setPvNome] = useState('');
-  const [pvIndirizzo, setPvIndirizzo] = useState('');
-  const [pvCitta, setPvCitta] = useState('');
-  const [pvCap, setPvCap] = useState('');
-  const [pvProvincia, setPvProvincia] = useState('');
-  const [pvRegione, setPvRegione] = useState('');
+  const [cldm, setCldm] = useState('');
+  const [pv, setPv] = useState<{
+    nome?: string;
+    indirizzo?: string;
+    citta?: string;
+    cap?: string;
+    provincia?: string;
+    regione?: string;
+    linee?: string[];
+  } | null>(null);
+  const [opzioniCldm, setOpzioniCldm] = useState<{ cldm: string; nome: string; citta?: string }[]>([]);
+  const [cldmError, setCldmError] = useState('');
+  const [lineePv, setLineePv] = useState<string[]>([]);
   const [ddtNumero, setDdtNumero] = useState('');
   const [ddtData, setDdtData] = useState('');
   const [numColli, setNumColli] = useState('');
@@ -50,6 +56,11 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const corriereNomeRef = useRef<HTMLInputElement>(null);
+  // Ref al cldm corrente per gestire le race tra fetchPv (lookup on blur) e
+  // la search debounced: dopo await, verifichiamo che il code richiesto sia
+  // ancora quello attivo prima di applicare i setState (evita stale closure
+  // quando l'utente digita velocemente o cambia campo).
+  const cldmCorrenteRef = useRef('');
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -62,18 +73,12 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          numero_ordine: numeroOrdine,
+          cldm,
           motivo_reso: motivo,
           note: note || undefined,
           linee,
           corriere,
           corriere_nome: corriere === 'ALTRI' ? corriereNome : null,
-          pv_nome: pvNome,
-          pv_indirizzo: pvIndirizzo,
-          pv_citta: pvCitta,
-          pv_cap: pvCap,
-          pv_provincia: pvProvincia,
-          pv_regione: pvRegione || null,
           ddt_numero: ddtNumero || null,
           ddt_data: ddtData || null,
           num_colli: numColli ? Number(numColli) : null,
@@ -115,6 +120,82 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
     }
   }
 
+  // Lookup del PV a partire dal codice CLDM. Chiamato on blur e quando
+  // l'utente seleziona un'option dalla datalist (il value dell'input diventa
+  // il cldm esatto). Su code vuoto resetta pv/linee. Gestione race: dopo
+  // await verifichiamo che `code` sia ancora il cldm corrente (ref) prima
+  // di applicare i setState — evita stale state se l'utente digita veloce
+  // o se la search debounced restituisce risultati dopo un nuovo blur.
+  async function fetchPv(code: string) {
+    cldmCorrenteRef.current = code;
+    if (!code) {
+      setPv(null);
+      setLineePv([]);
+      setCldmError('');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/anagrafica/${encodeURIComponent(code)}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('access_token')}` },
+      });
+      if (code !== cldmCorrenteRef.current) return; // stale: l'utente ha cambiato cldm
+      if (!res.ok) {
+        setPv(null);
+        setLineePv([]);
+        setCldmError('CLDM non trovato in anagrafica');
+        return;
+      }
+      const data = await res.json();
+      if (code !== cldmCorrenteRef.current) return; // stale
+      setPv(data.pv);
+      setLineePv(data.pv.linee || []);
+      setCldmError('');
+    } catch {
+      if (code !== cldmCorrenteRef.current) return;
+      setCldmError('Errore caricamento PV');
+      setPv(null);
+      setLineePv([]);
+    }
+  }
+
+  // Search debounced: a fronte di cambio `cldm`, dopo 250ms chiama
+  // GET /api/anagrafica?q=<cldm> per popolare la datalist. Se cldm < 2 char
+  // svuota le opzioni. Cleanup del timeout a ogni keystroke.
+  useEffect(() => {
+    if (cldm.length < 2) {
+      setOpzioniCldm([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/anagrafica?q=${encodeURIComponent(cldm)}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('access_token')}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        // Non guardiamo cldmCorrenteRef qui: le opzioni della datalist sono
+        // solo suggerimenti, una race non produce stato errato (al massimo
+        // una lista leggermente stale che verrà rinfrescata al prossimo keystroke).
+        setOpzioniCldm(data.data || []);
+      } catch {
+        // Silenzioso: la datalist è solo un aiuto, non bloccare il form.
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [cldm]);
+
+  // Quando l'utente seleziona un'option dalla datalist, l'input riceve il
+  // cldm esatto. Trigger immediatamente il lookup così il PV compare senza
+  // dover blur/re-focus. L'onBlur rimane come fallback per il caso in cui
+  // l'utente digiti un cldm valido senza selezionare dalla lista.
+  function onCldmChange(value: string) {
+    setCldm(value);
+    if (value.length >= 2 && opzioniCldm.some((o) => o.cldm === value)) {
+      // Selezione da lista: lookup immediato.
+      fetchPv(value);
+    }
+  }
+
   return (
     <form onSubmit={handleSubmit} className="pt-4 space-y-4">
       {noteBanner}
@@ -126,21 +207,69 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       )}
 
       <div>
-        <label htmlFor="numero_ordine" className="block text-sm font-medium text-gray-300 mb-1.5">
-          Numero Ordine *
+        <label htmlFor="cldm" className="block text-sm font-medium text-gray-300 mb-1.5">
+          CLDM / Punto vendita *
         </label>
         <input
-          id="numero_ordine"
+          id="cldm"
           type="text"
-          inputMode="text"
+          list="cldm-options"
           required
-          pattern="[A-Za-z0-9\-_\/]{3,50}"
-          value={numeroOrdine}
-          onChange={(e) => setNumeroOrdine(e.target.value)}
+          inputMode="numeric"
+          pattern="[A-Za-z0-9_\-]{2,20}"
+          value={cldm}
+          onChange={(e) => onCldmChange(e.target.value)}
+          onBlur={(e) => fetchPv(e.target.value)}
           className="input-mobile"
-          placeholder="Es. ORD-2026-001"
+          placeholder="Es. 507888"
           autoComplete="off"
+          aria-describedby="cldm-hint cldm-error"
+          aria-invalid={!!cldmError}
         />
+        <datalist id="cldm-options">
+          {opzioniCldm.map((o) => (
+            <option key={o.cldm} value={o.cldm}>
+              {o.cldm} — {o.nome}{o.citta ? ` (${o.citta})` : ''}
+            </option>
+          ))}
+        </datalist>
+        <p id="cldm-hint" className="text-xs text-gray-500 mt-1">
+          Digita il codice CLDM (es. 507888) e seleziona dalla lista.
+        </p>
+        {cldmError && (
+          <p id="cldm-error" role="status" className="text-sm text-red-300 mt-1">
+            {cldmError}
+          </p>
+        )}
+        {pv && (
+          <div className="pt-2 mt-2 border-t border-gray-700">
+            <p className="text-sm font-semibold text-gray-200 mb-2">Punto vendita (da anagrafica)</p>
+            <dl className="text-sm text-gray-300 space-y-1">
+              <div>
+                <dt className="inline font-medium">Nome: </dt>
+                <dd className="inline">{pv.nome}</dd>
+              </div>
+              <div>
+                <dt className="inline font-medium">Indirizzo: </dt>
+                <dd className="inline">{pv.indirizzo}</dd>
+              </div>
+              <div>
+                <dt className="inline font-medium">Città: </dt>
+                <dd className="inline">{pv.citta} ({pv.cap}) — {pv.provincia}</dd>
+              </div>
+              {pv.regione && (
+                <div>
+                  <dt className="inline font-medium">Regione: </dt>
+                  <dd className="inline">{pv.regione}</dd>
+                </div>
+              )}
+            </dl>
+          </div>
+        )}
+        {/* Live region: annuncia il PV trovato (content caricato async). */}
+        <div role="status" aria-live="polite" className="sr-only">
+          {pv ? `Punto vendita trovato: ${pv.nome}` : cldmError || ''}
+        </div>
       </div>
 
       <div>
@@ -162,7 +291,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
         </select>
       </div>
 
-      <LineeForm value={linee} onChange={setLinee} />
+      <LineeForm value={linee} onChange={setLinee} lineeDisponibili={lineePv} />
 
       <div>
         <label htmlFor="note" className="block text-sm font-medium text-gray-300 mb-1.5">
@@ -231,110 +360,6 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
         )}
         <div role="status" aria-live="polite" className="sr-only">
           {corriere === 'ALTRI' ? 'Inserisci il nome del corriere.' : ''}
-        </div>
-
-        {/* Punto vendita (inserimento manuale) */}
-        <div className="pt-2 border-t border-gray-700">
-          <p className="text-sm font-semibold text-gray-200 mb-3">Punto vendita (ritiro)</p>
-          <div className="space-y-3">
-            <div>
-              <label htmlFor="pv_nome" className="block text-sm font-medium text-gray-300 mb-1.5">
-                Nome punto vendita *
-              </label>
-              <input
-                id="pv_nome"
-                type="text"
-                required
-                value={pvNome}
-                onChange={(e) => setPvNome(e.target.value)}
-                className="input-mobile"
-                placeholder="Es. ABC Store Roma"
-                maxLength={255}
-                autoComplete="off"
-              />
-            </div>
-            <div>
-              <label htmlFor="pv_indirizzo" className="block text-sm font-medium text-gray-300 mb-1.5">
-                Indirizzo *
-              </label>
-              <input
-                id="pv_indirizzo"
-                type="text"
-                required
-                value={pvIndirizzo}
-                onChange={(e) => setPvIndirizzo(e.target.value)}
-                className="input-mobile"
-                placeholder="Via, numero, città"
-                maxLength={255}
-                autoComplete="off"
-              />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="pv_citta" className="block text-sm font-medium text-gray-300 mb-1.5">
-                  Città *
-                </label>
-                <input
-                  id="pv_citta"
-                  type="text"
-                  required
-                  value={pvCitta}
-                  onChange={(e) => setPvCitta(e.target.value)}
-                  className="input-mobile"
-                  maxLength={100}
-                  autoComplete="off"
-                />
-              </div>
-              <div>
-                <label htmlFor="pv_cap" className="block text-sm font-medium text-gray-300 mb-1.5">
-                  CAP *
-                </label>
-                <input
-                  id="pv_cap"
-                  type="text"
-                  inputMode="numeric"
-                  required
-                  pattern="[0-9]{5}"
-                  value={pvCap}
-                  onChange={(e) => setPvCap(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                  className="input-mobile"
-                  placeholder="Es. 00100"
-                  autoComplete="off"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="pv_provincia" className="block text-sm font-medium text-gray-300 mb-1.5">
-                  Provincia *
-                </label>
-                <input
-                  id="pv_provincia"
-                  type="text"
-                  required
-                  value={pvProvincia}
-                  onChange={(e) => setPvProvincia(e.target.value)}
-                  className="input-mobile"
-                  maxLength={50}
-                  autoComplete="off"
-                />
-              </div>
-              <div>
-                <label htmlFor="pv_regione" className="block text-sm font-medium text-gray-300 mb-1.5">
-                  Regione <span className="text-gray-500">(opzionale)</span>
-                </label>
-                <input
-                  id="pv_regione"
-                  type="text"
-                  value={pvRegione}
-                  onChange={(e) => setPvRegione(e.target.value)}
-                  className="input-mobile"
-                  maxLength={50}
-                  autoComplete="off"
-                />
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* DDT + colli */}
@@ -408,7 +433,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
         {loading ? 'Invio della richiesta in corso.' : ''}
       </div>
 
-      <button type="submit" disabled={loading || !motivo || !corriere} className="btn-mobile">
+      <button type="submit" disabled={loading || !motivo || !corriere || !cldm || !pv} className="btn-mobile">
         {loading ? (
           <span className="flex items-center gap-2">
             <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
