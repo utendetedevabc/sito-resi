@@ -4,20 +4,35 @@ import rateLimit from 'express-rate-limit';
 import hpp from 'hpp';
 import { randomBytes } from 'crypto';
 
-// 1. CSP strict — in dev permette inline scripts per Next.js HMR
-// NOTA: allineato a server.js (dev = NODE_ENV !== 'production'): con NODE_ENV
-// non impostato (es. `node server.js`) si è in dev, non prod. Prima qui si usava
-// === 'development' e undefined veniva trattato come prod, attivando
-// upgrade-insecure-requests + HSTS che su HTTP LAN rompevano il login da mobile.
+// 1. CSP + header HTTPS.
+// "Produzione" (NODE_ENV=production) NON implica "deployment HTTPS": il go-live
+// attuale è PROD su HTTP interno (LAN :3003, no TLS). Gli header che forzano
+// HTTPS sono corretti SOLO su un deployment HTTPS reale; su HTTP interno
+// rompono il sito:
+//   - upgrade-insecure-requests: il browser upgradea i subresource (CSS/JS) a
+//     https → ERR_SSL_PROTOCOL_ERROR → "non carica la grafica" sull'IP LAN.
+//   - script-src 'self' (senza nonce): blocca gli script inline di bootstrap di
+//     Next.js → niente idratazione → "Caricamento…" infinito (cerchiamento).
+//   - HSTS: ignorato su HTTP (spec), ma ininfluente; tenuto solo su HTTPS.
+//   - COEP require-corp: blocca risorse cross-origin (font Google) su HTTP.
+// HTTPS_DEPLOYMENT=true attiva gli header strict (per un futuro deploy HTTPS).
+// Sul go-live HTTP interno NON si imposta (default false) → path rilassato.
 const isDev = process.env.NODE_ENV !== 'production';
+const isHttps = process.env.HTTPS_DEPLOYMENT === 'true';
 const cspConfig = {
   directives: {
     defaultSrc: ["'self'"],
-    scriptSrc: isDev ? ["'self'", "'unsafe-inline'", "'unsafe-eval'"] : ["'self'"],
-    styleSrc: ["'self'", "'unsafe-inline'"],
+    // script inline di bootstrap di Next.js: servono 'unsafe-inline' (i nonce
+    // non sono implementati). 'unsafe-eval' solo in dev (HMR/source map).
+    scriptSrc: isHttps
+      ? ["'self'", "'unsafe-inline'"]
+      : ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+    // style-src include i font CSS Google (preload in layout); su HTTP serve
+    // per non bloccare il stylesheet esterno.
+    styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
     imgSrc: ["'self'", "data:", "blob:"],
     connectSrc: ["'self'"],
-    fontSrc: ["'self'"],
+    fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
     frameSrc: ["'none'"],
     objectSrc: ["'none'"],
     baseUri: ["'self'"],
@@ -27,11 +42,10 @@ const cspConfig = {
   },
 };
 
-// upgrade-insecure-requests è un DEFAULT di helmet (forza HTTPS). In prod va
-// tenuto; in dev viene rimosso dal middleware di cleanup sotto (v. fine file),
-// perché sui test LAN in HTTP il browser altrimenti converte le fetch API in
-// https (nessun TLS su :3002) e il login da mobile fallisce.
-if (!isDev) {
+// upgrade-insecure-requests ha senso SOLO su HTTPS (forza i subresource http
+// residui a https). Su HTTP interno va OMESSO, altrimenti il browser converte
+// CSS/JS in https e il sito non carica la grafica.
+if (isHttps) {
   cspConfig.directives.upgradeInsecureRequests = [];
 }
 
@@ -87,19 +101,21 @@ export function generateCsrfToken() {
 }
 
 export function setupSecurityMiddleware(app) {
-  // helmet() di default attiva HSTS (maxAge 180gg): in dev su HTTP va disattivato
-  // (false), in prod si configura esplicitamente. Così si evita anche la riga
-  // helmet.hsts() separata.
+  // helmet() di default attiva HSTS (maxAge 180gg): su HTTP va disattivato
+  // (false), su HTTPS si configura esplicitamente. Così si evita anche la riga
+  // helmet.hsts() separata. Gate su isHttps, non isDev: il go-live è PROD su
+  // HTTP, e HSTS non va inviato.
   app.use(helmet({
     contentSecurityPolicy: cspConfig,
-    hsts: isDev ? false : { maxAge: 31536000, includeSubDomains: true, preload: true },
+    hsts: isHttps ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false,
   }));
   app.use(helmet.referrerPolicy({ policy: 'strict-origin-when-cross-origin' }));
-  // COEP require-corp in dev HTTP LAN blocca risorse cross-origin (es. font
-  // Google) e aggiunge rumore/errori JS mobile. In dev usiamo unsafe-none
-  // (stesso pattern di HSTS/upgrade-insecure-requests); in prod require-corp.
-  app.use(helmet.crossOriginEmbedderPolicy({ policy: isDev ? 'unsafe-none' : 'require-corp' }));
-  app.use(helmet.crossOriginOpenerPolicy({ policy: 'same-origin' }));
+  // COEP require-corp blocca risorse cross-origin (es. font Google) su HTTP
+  // interno. Path rilassato (unsafe-none) quando NON è un deployment HTTPS.
+  app.use(helmet.crossOriginEmbedderPolicy({ policy: isHttps ? 'require-corp' : 'unsafe-none' }));
+  // COOP same-origin su HTTPS; su HTTP non-trustworthy il browser lo ignora
+  // comunque (warning console). 'unsafe-none' su HTTP evita il warning.
+  app.use(helmet.crossOriginOpenerPolicy({ policy: isHttps ? 'same-origin' : 'unsafe-none' }));
   app.use(helmet.crossOriginResourcePolicy({ policy: 'same-origin' }));
   app.use(helmet.dnsPrefetchControl({ allow: false }));
   app.use(helmet.permittedCrossDomainPolicies({ permittedPolicies: 'none' }));
@@ -108,10 +124,12 @@ export function setupSecurityMiddleware(app) {
   app.use(cors(corsOptions));
   app.use(hpp());
 
-  // DEV (HTTP LAN, niente TLS): rimuove gli header che forzano HTTPS, altrimenti
-  // il browser mobile converte le fetch API in https e il login fallisce.
+  // HTTP interno (no TLS, dev ORE prod-LAN): rimuove gli header che forzano
+  // HTTPS, altrimenti il browser converte le fetch API / subresource in https
+  // e il sito non carica. Cintura + bretelle: anche se cspConfig non aggiunge
+  // upgrade-insecure-requests quando !isHttps, helmet potrebbe iniettarlo.
   // Va dopo helmet/cors così leggi i header già impostati e li pulisci.
-  if (isDev) {
+  if (!isHttps) {
     app.use((req, res, next) => {
       res.removeHeader('Strict-Transport-Security');
       const csp = res.getHeader('Content-Security-Policy');
