@@ -81,12 +81,21 @@ router.put('/users/:id', (req, res) => {
   const fields = [];
   const values = [];
   const data = parsed.data;
+  let passwordChanged = false;
 
   if (data.ruolo !== undefined) { fields.push('ruolo = ?'); values.push(data.ruolo); }
   if (data.nome !== undefined) { fields.push('nome = ?'); values.push(data.nome); }
   if (data.azienda !== undefined) { fields.push('azienda = ?'); values.push(data.azienda); }
   if (data.codice_cliente_esterno !== undefined) { fields.push('codice_cliente_esterno = ?'); values.push(data.codice_cliente_esterno); }
   if (data.attivo !== undefined) { fields.push('attivo = ?'); values.push(data.attivo); }
+  // Reset password opzionale: solo se fornita una stringa non vuota (lo schema
+  // ammette ''/undefined = "non modificare"; >=12 char altrimenti). Password
+  // mai loggata né restituita — solo il fatto del reset va in audit.
+  if (typeof data.password === 'string' && data.password !== '') {
+    fields.push('password_hash = ?');
+    values.push(hashPassword(data.password, PEPPER));
+    passwordChanged = true;
+  }
 
   if (fields.length === 0) {
     return res.status(400).json({ error: 'Nessun campo da aggiornare' });
@@ -96,9 +105,18 @@ router.put('/users/:id', (req, res) => {
   values.push(id);
 
   db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-  logger.info(`Admin ${req.user.id} ha aggiornato utente ${id}`);
 
-  res.json({ success: true });
+  // Audit: registra SEMPRE l'aggiornamento; flag password_changed quando il
+  // reset è stato eseguito (senza valore della password).
+  logAudit(req.user.id, 'USER_UPDATE', {
+    target_user_id: Number(id),
+    updated_fields: fields.filter((f) => f !== "updated_at = datetime('now')").map((f) => f.split(' =')[0].trim()),
+    password_changed: passwordChanged,
+  }, req);
+
+  logger.info(`Admin ${req.user.id} ha aggiornato utente ${id}${passwordChanged ? ' (password resettata)' : ''}`);
+
+  res.json({ success: true, password_changed: passwordChanged });
 });
 
 // --- F11: anagrafica agenti (provisioning users) ---

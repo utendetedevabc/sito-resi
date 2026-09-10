@@ -90,7 +90,13 @@ export const createUserSchema = z.object({
   nome: z.string().min(1).max(255).transform(sanitize),
   azienda: z.string().max(255).transform(sanitize).optional().nullable(),
   codice_cliente_esterno: z.string().max(50).transform(sanitize).optional().nullable(),
-  csrf_token: z.string().length(64),
+  // csrf_token opzionale: le route admin sono protette da Bearer JWT +
+  // authorize('admin') (i Bearer token sono immuni da CSRF per design) e NON
+  // hanno middleware di validazione CSRF lato server (solo il route di login
+  // in auth.js valida contro csrfStore). Rendere il campo opzionale sblocca
+  // create/PUT/toggle che inviano 'placeholder' (in precedenza safeParse
+  // falliva su length(64) → 400 silente). Nessuna regressione di sicurezza.
+  csrf_token: z.string().optional(),
 });
 
 export const updateUserSchema = z.object({
@@ -99,5 +105,16 @@ export const updateUserSchema = z.object({
   azienda: z.string().max(255).transform(sanitize).optional().nullable(),
   codice_cliente_esterno: z.string().max(50).transform(sanitize).optional().nullable(),
   attivo: z.number().int().min(0).max(1).optional(),
-  csrf_token: z.string().length(64),
+  // Reset password opzionale su utente esistente: accetta assente/'' (non
+  // modificare) oppure una stringa >=12 char (come createUserSchema). Non
+  // sanificata (coerente con createUserSchema password) — la password può
+  // contenere qualsiasi carattere.
+  password: z.string()
+    .max(128)
+    .optional()
+    .refine((v) => v === undefined || v === '' || (typeof v === 'string' && v.length >= 12), {
+      message: 'Password minimo 12 caratteri',
+      path: ['password'],
+    }),
+  csrf_token: z.string().optional(),
 });
