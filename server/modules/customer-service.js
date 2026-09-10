@@ -10,6 +10,7 @@ import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
 import { sendWebhook } from './webhook.js';
 import { buildResiXls, pvDbAvailable } from '../lib/xls-export.js';
+import { sendResoAutorizzazioneEmail } from '../lib/resi-email.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Cartella dove salvare il file GLS giornaliero aggregato su disco
@@ -359,6 +360,16 @@ router.put('/richieste/:uuid', async (req, res) => {
       approvatore_nome: approvatore?.nome ?? null,
       approvatore_ruolo: approvatore?.ruolo ?? null,
     }).catch((err) => logger.error(`Webhook fallito per ${uuid}: ${err.message}`));
+
+    // Email di autorizzazione al reso (testo + PDF) alle destinatarie fisse.
+    // Fire-and-forget (DOPO res.json gia' partita sopra): non blocca la risposta
+    // HTTP. SMTP copiato da ABC HUB (server/lib/resi-email.js). Se SMTP non
+    // configurato o env RESI_AUTORIZZAZIONE_EMAIL_ON=0 → skip silente.
+    // Usa la riga completa appena aggiornata (richiestaAggiornata) cosi' i
+    // campi pv_*/ddt_*/linee/motivo sono quelli correnti.
+    sendResoAutorizzazioneEmail(richiestaAggiornata).catch((err) =>
+      logger.error(`Email autorizzazione fallita per ${uuid}: ${err.message}`)
+    );
   }
 
   res.json({ success: true, stato });

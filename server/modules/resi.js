@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
 import { sendWebhook } from './webhook.js';
+import { sendResoAutorizzazioneEmail } from '../lib/resi-email.js';
 import upload from './upload.js';
 
 const router = Router();
@@ -233,6 +234,12 @@ router.post('/', (req, res) => {
             approvatore_nome: csNome,
             approvatore_ruolo: csRuolo,
           }).catch((err) => logger.error(`Webhook fallito per ${uuid} (CS auto-chiuso): ${err.message}`));
+
+          // Email di autorizzazione (testo + PDF) — stesso trigger del CS PUT
+          // 2° livello. Fire-and-forget. Usa la riga completa appena creata.
+          sendResoAutorizzazioneEmail(row).catch((err) =>
+            logger.error(`Email autorizzazione fallita per ${uuid} (CS auto-chiuso): ${err.message}`)
+          );
           logAudit(userId, 'RESO_APPROVATO_FINALE', { uuid, stato: 'approvato', auto: true }, req);
         }
       } catch (e) {
