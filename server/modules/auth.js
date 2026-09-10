@@ -10,6 +10,14 @@ import {
 } from '../lib/security.js';
 import { generateFingerprint } from '../security/fingerprint.js';
 import { authenticate } from '../middleware/authenticate.js';
+
+// Cookie secure: di default lo sono in produzione (HTTPS). Override via
+// COOKIE_SECURE=false per deployment HTTP interni (es. porta in LAN senza
+// reverse proxy HTTPS) dove un cookie secure non verrebbe mai inviato dal
+// browser e il refresh-token sarebbe inutilizzabile.
+const cookieSecure = process.env.COOKIE_SECURE
+  ? process.env.COOKIE_SECURE === 'true'
+  : process.env.NODE_ENV === 'production';
 import { loginSchema } from './validation.js';
 
 const router = Router();
@@ -101,7 +109,9 @@ router.post('/login', async (req, res) => {
   }
   csrfStore.delete(csrf_token);
 
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  // COLLATE NOCASE: login case-insensitive sull'email (coerente col provisioning
+  // agenti.js e col comportamento Gmail). Non altera l'email memorizzata.
+  const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE').get(email);
 
   if (!user) {
     // Timing-safe: compute a dummy hash to avoid timing attacks
@@ -155,7 +165,7 @@ router.post('/login', async (req, res) => {
 
   res.cookie('refresh_token', refreshTokenRaw, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: cookieSecure,
     sameSite: 'Strict',
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
@@ -214,7 +224,7 @@ router.post('/refresh', (req, res) => {
 
   res.cookie('refresh_token', newPair.refreshTokenRaw, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: cookieSecure,
     sameSite: 'Strict',
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',

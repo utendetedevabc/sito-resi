@@ -23,12 +23,18 @@ const PEPPER = process.env.PASSWORD_PEPPER || '';
 // File fuori repo. Default assoluto. Mai committare né loggare il contenuto.
 export const AGENTI_PATH = process.env.AGENTI_PATH || '/home/adimn/Scrivania/anagrafica_agenti.xlsx';
 
-// Foglio "Foglio1", 107 righe dati, NESSUN header (riga 0 = primo record).
+// Foglio "Foglio1", righe dati, NESSUN header (riga 0 = primo record).
 // Colonne: A=0 codice, B=1 nome, C=2 email, D=3 password (chiaro).
 function cell(r, k) {
   const v = r[k];
   return v != null ? String(v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim() : '';
 }
+
+// Email valida minima (stesso spirito di loginSchema email().email()). Usata per
+// scartare righe con email "token" garbage (es. export ERP con placeholder) che
+// altrimenti verrebbero mirrorate in users come account non loggabili.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function isValidEmail(s) { return EMAIL_RE.test(s); }
 
 // Deriva il ruolo matchando il codice contro anagrafica_pv.
 // - codice in resp_codice  -> venditore (responsabile, approva)
@@ -61,18 +67,24 @@ export function refreshAgenti() {
        nome=excluded.nome, email=excluded.email, password_hash=excluded.password_hash,
        ruolo=excluded.ruolo, updated_at=excluded.updated_at`
   );
-  const findUser = db.prepare('SELECT id FROM users WHERE email = ?');
+  // COLLATE NOCASE: match email case-insensitive. Evita di creare account
+  // duplicati quando il xlsx ha lo stesso email con case diverso (es.
+  // "M68.carlo@gmail.com" vs "m68.carlo@gmail.com" = stessa persona).
+  const findUser = db.prepare('SELECT id FROM users WHERE email = ? COLLATE NOCASE');
   const insertUser = db.prepare(
     `INSERT INTO users (email, password_hash, ruolo, nome, codice_cliente_esterno, attivo)
      VALUES (?,?,?,?,?,1)`
   );
   const updateUser = db.prepare(
     `UPDATE users SET nome=?, codice_cliente_esterno=?, ruolo=?, updated_at=datetime('now')
-     WHERE email=?`
+     WHERE email=? COLLATE NOCASE`
   );
 
   let inserted = 0, updated = 0, createdUsers = 0, updatedUsers = 0;
   const unmatched = [];
+  const skippedInvalidEmail = [];
+  const skippedDupCodice = [];
+  const seenCodici = new Set();
 
   const tx = db.transaction(() => {
     for (let i = 0; i < rows.length; i++) {
@@ -83,6 +95,14 @@ export function refreshAgenti() {
       const email = cell(r, 2);
       const password = cell(r, 3);
       if (!email || !password) continue; // email + password obbligatorie
+      // Scarta email non valide (token/placeholder): NON creare account non
+      // loggabili. Logga solo il codice, mai l'email/password.
+      if (!isValidEmail(email)) { skippedInvalidEmail.push(codice); continue; }
+      // Dedup per codice: un codice = un account. Se il codice e' gia' stato
+      // processato in questa riga, salta i duplicati (es. export ERP con righe
+      // ripetute). Mantiene la PRIMA riga valida incontrata.
+      if (seenCodici.has(codice)) { skippedDupCodice.push(codice); continue; }
+      seenCodici.add(codice);
 
       const { ruolo, matched } = deriveRuolo(codice);
       if (!matched) unmatched.push(codice);
@@ -105,6 +125,9 @@ export function refreshAgenti() {
   });
   tx();
 
+  if (skippedInvalidEmail.length) logger.warn(`[Agenti] Saltate ${skippedInvalidEmail.length} righe con email non valida (codici: ${skippedInvalidEmail.join(', ')})`);
+  if (skippedDupCodice.length) logger.warn(`[Agenti] Saltate ${skippedDupCodice.length} righe duplicate per codice gia' visto (codici: ${skippedDupCodice.join(', ')})`);
+
   // Backfill una-tantum resi pre-F11 (idempotente: solo righe resp_codice IS NULL).
   try {
     const info = db.prepare(
@@ -119,8 +142,8 @@ export function refreshAgenti() {
   }
 
   const total = db.prepare('SELECT COUNT(*) as c FROM anagrafica_agenti').get().c;
-  logger.info(`[Agenti] Importati ${inserted + updated} agenti (nuovi ${inserted}, agg ${updated}; users nuovi ${createdUsers}, agg ${updatedUsers}; tabella totale ${total}; unmatched ${unmatched.length}) da ${AGENTI_PATH}`);
-  return { imported: inserted, updated, total, unmatched, source: AGENTI_PATH, source_exists: true };
+  logger.info(`[Agenti] Importati ${inserted + updated} agenti (nuovi ${inserted}, agg ${updated}; users nuovi ${createdUsers}, agg ${updatedUsers}; tabella totale ${total}; unmatched ${unmatched.length}; saltati email-invalid ${skippedInvalidEmail.length}, dup-codice ${skippedDupCodice.length}) da ${AGENTI_PATH}`);
+  return { imported: inserted, updated, total, unmatched, skippedInvalidEmail: skippedInvalidEmail.length, skippedDupCodice: skippedDupCodice.length, source: AGENTI_PATH, source_exists: true };
 }
 
 export function agentiStatus() {

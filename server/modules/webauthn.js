@@ -11,6 +11,12 @@ import { generateTokenPair } from '../lib/security.js';
 import { generateFingerprint } from '../security/fingerprint.js';
 import { authenticate } from '../middleware/authenticate.js';
 
+// Cookie secure: default in produzione (HTTPS). COOKIE_SECURE=false per
+// deployment HTTP interni (vedi auth.js).
+const cookieSecure = process.env.COOKIE_SECURE
+  ? process.env.COOKIE_SECURE === 'true'
+  : process.env.NODE_ENV === 'production';
+
 const router = Router();
 
 const RP_NAME = process.env.WEBAUTHN_RP_NAME || 'Resi';
@@ -48,7 +54,7 @@ router.post('/register-begin', authenticate, async (req, res) => {
     // Store challenge in session/cookie (simplified: use CSRF token approach or in-memory)
     res.cookie('webauthn_challenge', options.challenge, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: cookieSecure,
       sameSite: 'Strict',
       maxAge: 5 * 60 * 1000,
     });
@@ -115,7 +121,7 @@ router.post('/login-begin', async (req, res) => {
 
     res.cookie('webauthn_challenge', options.challenge, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: cookieSecure,
       sameSite: 'Strict',
       maxAge: 5 * 60 * 1000,
     });
@@ -179,7 +185,7 @@ router.post('/login-finish', async (req, res) => {
 
     res.cookie('refresh_token', refreshTokenRaw, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: cookieSecure,
       sameSite: 'Strict',
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',

@@ -110,6 +110,8 @@ router.post('/agenti/refresh', (req, res) => {
     logAudit(req.user.id, 'AGENTI_REFRESH', {
       imported: result.imported, updated: result.updated, total: result.total,
       unmatched_count: (result.unmatched || []).length, source_exists: result.source_exists,
+      skipped_invalid_email: result.skippedInvalidEmail || 0,
+      skipped_dup_codice: result.skippedDupCodice || 0,
     }, req);
     res.json(result);
   } catch (err) {
