@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, createContext, useContext } from 'react';
+import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react';
 
 interface User {
   id: number;
@@ -12,7 +12,8 @@ interface User {
 interface AuthState {
   user: User | null;
   accessToken: string | null;
-  login: (token: string) => Promise<void>;
+  authReady: boolean; // true dopo il primo check/restore (per i layout gate)
+  login: (token: string) => Promise<boolean>;
   logout: () => Promise<void>;
   refresh: () => Promise<string | null>;
   isAuthenticated: boolean;
@@ -24,10 +25,21 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+// Endpoint la cui gestione 401 è delegata al codice stesso: l'interceptor NON
+// deve intercettarli, altrimenti refresh() -> fetch wrappato -> 401 -> refresh()
+// -> ricorsione infinita -> stack overflow -> pagina ricaricata -> loop login.
+const AUTH_ENDPOINTS = /\/api\/auth\/(refresh|login|csrf-token|logout|webauthn)/;
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+
+  // Riferimento al fetch NATIVO (prima del wrap): refresh() lo usa per non
+  // ricadere nell'interceptor. refreshPromiseRef = singleton anti re-entrancy.
+  const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const refreshPromiseRef = useRef<Promise<string | null> | null>(null);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -36,25 +48,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refresh = useCallback(async () => {
-    try {
-      const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
-      if (!res.ok) throw new Error('Refresh failed');
-      const data = await res.json();
-      setAccessToken(data.access_token);
-      return data.access_token;
-    } catch {
-      setAccessToken(null);
-      setUser(null);
-      return null;
-    }
+    // Singleton: se c'è già una refresh in flight, riusa la stessa promise
+    // (evita N refresh parallele su N risposte 401 simultanee).
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    const nativeFetch = originalFetchRef.current || window.fetch.bind(window);
+    const p = (async () => {
+      try {
+        const res = await nativeFetch('/api/auth/refresh', {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (!res.ok) throw new Error('Refresh failed');
+        const data = await res.json();
+        setAccessToken(data.access_token);
+        if (typeof window !== 'undefined' && data.access_token) {
+          localStorage.setItem('access_token', data.access_token);
+        }
+        return data.access_token as string;
+      } catch {
+        // refresh fallito (cookie assente/scaduto — normale su mobile HTTP).
+        // Pulisce lo stato ma NON redirige qui: lo fa l'interceptor una volta.
+        setAccessToken(null);
+        setUser(null);
+        if (typeof window !== 'undefined') localStorage.removeItem('access_token');
+        return null;
+      } finally {
+        refreshPromiseRef.current = null;
+      }
+    })();
+    refreshPromiseRef.current = p;
+    return p;
   }, []);
 
   const login = useCallback(async (token: string) => {
     setAccessToken(token);
-    const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
-    if (res.ok) {
-      const data = await res.json();
-      setUser(data.user);
+    try {
+      const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data.user);
+        return true;
+      }
+      // Token non valido: NON innescare refresh qui (evita ricorsione).
+      // L'interceptor gestirà un'eventuale refresh singola.
+      return false;
+    } catch {
+      return false;
     }
   }, []);
 
@@ -71,33 +110,68 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBiometricEnabled(false);
   }, []);
 
-  // Auto-restore session
+  // Auto-restore session: al mount, se c'è un token, verifica con /me.
+  // Se valido -> setUser. Se stale -> rimuove il token (NO loop, NO refresh in catch).
+  // authReady diventa true solo dopo questo primo check (per i layout gate).
   useEffect(() => {
-    const stored = localStorage.getItem('access_token');
+    let cancelled = false;
+    const stored = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
     if (stored) {
-      login(stored).catch(() => {
-        refresh();
+      login(stored).then((ok) => {
+        if (cancelled) return;
+        if (!ok) localStorage.removeItem('access_token');
+        setAuthReady(true);
       });
+    } else {
+      setAuthReady(true);
     }
-  }, [login, refresh]);
+    return () => {
+      cancelled = true;
+    };
+  }, [login]);
 
-  // Auto-refresh on 401 (interceptor)
+  // Auto-refresh on 401 (interceptor) — ANTI-RICORSIONE:
+  // 1. cattura originalFetch PRIMA di riassegnare window.fetch
+  // 2. skip endpoint auth (si gestiscono da soli)
+  // 3. guard re-entrancy via refreshPromiseRef (singleton in refresh)
+  // 4. su refresh fallita: clear token + redirect /login UNA volta (se non su /login)
   useEffect(() => {
     const originalFetch = window.fetch;
-    window.fetch = async (...args) => {
+    originalFetchRef.current = originalFetch;
+    let redirected = false;
+
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
       const res = await originalFetch(...args);
-      if (res.status === 401) {
-        const newToken = await refresh();
-        if (newToken) {
-          const [url, init] = args;
-          const newInit = { ...init, headers: { ...init?.headers, Authorization: `Bearer ${newToken}` } };
-          return originalFetch(url, newInit);
+      if (res.status !== 401) return res;
+
+      const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request)?.url || '';
+      // Non intercettare gli endpoint auth (si gestiscono da soli)
+      if (AUTH_ENDPOINTS.test(url)) return res;
+
+      const newToken = await refresh();
+      if (newToken) {
+        const [req, init] = args;
+        const newInit = {
+          ...init,
+          headers: { ...(init?.headers || {}), Authorization: `Bearer ${newToken}` },
+        };
+        return originalFetch(req, newInit);
+      }
+
+      // refresh fallita: sessione scaduta. Redirect UNA volta a /login.
+      if (typeof window !== 'undefined' && !redirected) {
+        redirected = true;
+        localStorage.removeItem('access_token');
+        if (!window.location.pathname.startsWith('/login')) {
+          window.location.href = '/login';
         }
       }
       return res;
     };
+
     return () => {
       window.fetch = originalFetch;
+      originalFetchRef.current = null;
     };
   }, [refresh]);
 
@@ -192,6 +266,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         accessToken,
+        authReady,
         login,
         logout,
         refresh,

@@ -1,13 +1,21 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { FingerPrintIcon } from '@heroicons/react/24/outline';
 
+function roleHome(r?: string) {
+  if (r === 'venditore') return '/venditore';
+  if (r === 'customer_service') return '/customer-service';
+  if (r === 'admin') return '/admin';
+  return '/dashboard';
+}
+
 export default function LoginPage() {
+  const { login, loginBiometric, user, authReady } = useAuth();
   const router = useRouter();
-  const { login, loginBiometric } = useAuth();
+  const emailRef = useRef<HTMLInputElement>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [csrfToken, setCsrfToken] = useState('');
@@ -15,36 +23,59 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [showBiometric, setShowBiometric] = useState(false);
 
+  // Carica CSRF token e mostra eventuale biometria; autofocus sul campo email.
   useEffect(() => {
     fetch('/api/auth/csrf-token')
       .then((r) => r.json())
       .then((d) => setCsrfToken(d.csrf_token))
       .catch(() => setError('Errore caricamento sessione'));
 
-    // Show biometric button if supported and previously enabled
     if (typeof window !== 'undefined' && localStorage.getItem('biometric_enabled') === '1') {
       if ('PublicKeyCredential' in window) {
         setShowBiometric(true);
       }
     }
+    // Autofocus sul primo campo (WCAG 3.3.2: identifica il primo input).
+    emailRef.current?.focus();
   }, []);
+
+  // Guard "già autenticato": se l'auto-restore ha ripristinato l'utente,
+  // manda al home del ruolo invece di mostrare di nuovo il login.
+  useEffect(() => {
+    if (authReady && user) {
+      router.push(roleHome(user.ruolo));
+    }
+  }, [authReady, user, router]);
+
+  // Su errore, sposta il focus al primo campo invalido (WCAG 3.3.1/4.1.3).
+  useEffect(() => {
+    if (error) {
+      emailRef.current?.focus();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [error]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    let token = csrfToken;
-    if (!token) {
-      try {
-        const r = await fetch('/api/auth/csrf-token');
-        const d = await r.json();
-        token = d.csrf_token;
-      } catch {
-        setError('Errore caricamento sessione');
-        setLoading(false);
-        return;
-      }
+    // Fetch SEMPRE un CSRF token fresco prima di ogni tentativo di login.
+    // Il token e' single-use (csrfStore.delete dopo l'uso) e in-memory
+    // (wiped al restart del dev server). Usare un token cached/consumato
+    // (es. dopo un login fallito, o dopo un restart) -> 403 "Token CSRF non valido".
+    // cache:'no-store' bypassa eventuali Service Worker stale che servirebbero
+    // token vecchi dal telefono.
+    let token: string;
+    try {
+      const r = await fetch('/api/auth/csrf-token', { cache: 'no-store' });
+      const d = await r.json();
+      token = d.csrf_token;
+      setCsrfToken(token);
+    } catch {
+      setError('Errore caricamento sessione');
+      setLoading(false);
+      return;
     }
 
     try {
@@ -54,7 +85,14 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password, csrf_token: token }),
       });
 
-      const data = await res.json();
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        setError('Risposta non valida dal server');
+        setLoading(false);
+        return;
+      }
 
       if (!res.ok) {
         setError(data.error || 'Credenziali non valide');
@@ -62,21 +100,23 @@ export default function LoginPage() {
         return;
       }
 
-      localStorage.setItem('access_token', data.access_token);
-      await login(data.access_token);
-
-      if (data.user.ruolo === 'store_account') {
-        window.location.href = '/dashboard';
-      } else if (data.user.ruolo === 'venditore') {
-        window.location.href = '/venditore';
-      } else if (data.user.ruolo === 'customer_service') {
-        window.location.href = '/customer-service';
-      } else if (data.user.ruolo === 'admin') {
-        window.location.href = '/admin';
+      if (!data.access_token) {
+        setError('Token mancante nella risposta');
+        setLoading(false);
+        return;
       }
+
+      localStorage.setItem('access_token', data.access_token);
+      login(data.access_token).catch(() => {});
+
+      setEmail('');
+      setPassword('');
+
+      // router.push (NO window.location.href full-reload): preserva AuthProvider
+      // e lo stato, evita re-read localStorage al reload che causava il loop.
+      router.push(roleHome(data.user?.ruolo));
     } catch {
-      setError('Errore di connessione');
-    } finally {
+      setError('Errore di connessione al server');
       setLoading(false);
     }
   }
@@ -99,7 +139,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-600/25">
-            <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
             </svg>
           </div>
@@ -109,6 +149,7 @@ export default function LoginPage() {
 
         {error && (
           <div
+            id="login-error"
             role="alert"
             aria-live="assertive"
             className="mb-4 p-3 bg-red-900/30 text-red-300 rounded-xl border border-red-800 text-sm"
@@ -121,6 +162,7 @@ export default function LoginPage() {
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-1.5">Email</label>
             <input
+              ref={emailRef}
               id="email"
               type="email"
               autoComplete="email"
@@ -130,6 +172,7 @@ export default function LoginPage() {
               className="input-mobile"
               placeholder="nome@azienda.it"
               aria-invalid={!!error}
+              aria-describedby="login-error"
             />
           </div>
 
@@ -145,6 +188,7 @@ export default function LoginPage() {
               className="input-mobile"
               placeholder="••••••••"
               aria-invalid={!!error}
+              aria-describedby="login-error"
             />
           </div>
 
@@ -163,7 +207,7 @@ export default function LoginPage() {
             disabled={loading}
             className="mt-4 w-full h-12 bg-gray-800 text-gray-200 font-medium rounded-xl border border-gray-700 active:bg-gray-700 transition-colors flex items-center justify-center gap-2"
           >
-            <FingerPrintIcon className="w-5 h-5" />
+            <FingerPrintIcon className="w-5 h-5" aria-hidden="true" />
             Accedi con biometrico
           </button>
         )}

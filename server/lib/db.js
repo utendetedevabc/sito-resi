@@ -49,6 +49,88 @@ try {
   console.error('Errore caricamento schema:', err.message);
 }
 
+// Migrazione idempotente: colonne per export corriere (file RITGIO*.xls).
+// Aggiunge a richieste_reso i dati mancanti necessari al manifest ritiri.
+function addColumnIfMissing(table, col, def) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+  } catch (err) {
+    console.error(`Errore migrazione colonna ${table}.${col}:`, err.message);
+  }
+}
+addColumnIfMissing('richieste_reso', 'cldm', 'TEXT');
+addColumnIfMissing('richieste_reso', 'ddt_numero', 'TEXT');
+addColumnIfMissing('richieste_reso', 'ddt_data', 'TEXT');
+addColumnIfMissing('richieste_reso', 'num_colli', 'INTEGER');
+addColumnIfMissing('richieste_reso', 'bda_autorizzazione', 'TEXT');
+// Nuovo modello reso (linee + corriere + PV manuale + num_reso sequenziale).
+// Le colonne vecchie restano per backward compat con resi gia' inseriti.
+addColumnIfMissing('richieste_reso', 'linee', 'TEXT');            // JSON [{nome}]
+addColumnIfMissing('richieste_reso', 'corriere', 'TEXT');         // GLS/NIEDDU/TRAMES/PARENA/ALTRI
+addColumnIfMissing('richieste_reso', 'corriere_nome', 'TEXT');    // nome libero se corriere=ALTRI
+addColumnIfMissing('richieste_reso', 'pv_nome', 'TEXT');          // ragione sociale PV (manuale)
+addColumnIfMissing('richieste_reso', 'pv_indirizzo', 'TEXT');
+addColumnIfMissing('richieste_reso', 'pv_citta', 'TEXT');
+addColumnIfMissing('richieste_reso', 'pv_cap', 'TEXT');
+addColumnIfMissing('richieste_reso', 'pv_provincia', 'TEXT');
+addColumnIfMissing('richieste_reso', 'pv_regione', 'TEXT');
+addColumnIfMissing('richieste_reso', 'num_reso', 'INTEGER');      // identificativo sequenziale 1..1.000.000
+// Task 4 (CS avanzata): data_spedizione impostata dal POST /richieste/export
+// quando l'interno esporta i resi approvati (XLS multi-riga + mark spedito).
+// NULL finche' il reso e' "approvato"; valorizzato allo switch in "spedito".
+addColumnIfMissing('richieste_reso', 'data_spedizione', 'TEXT');
+// F11: routing approvazioni per responsabile. resp_codice/resp_nome memorizzati
+// sul reso alla creazione (lookupPvByCldm) e usati dal filtro venditore.js.
+addColumnIfMissing('richieste_reso', 'resp_codice', 'TEXT');
+addColumnIfMissing('richieste_reso', 'resp_nome', 'TEXT');
+// F10: tabella anagrafica PV interna (importata da ZSD127.xlsx). Idempotente.
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS anagrafica_pv (
+    cldm TEXT PRIMARY KEY,
+    nome TEXT, indirizzo TEXT, citta TEXT, cap TEXT,
+    provincia TEXT, regione TEXT,
+    resp_codice TEXT, resp_nome TEXT,
+    promo_codice TEXT, promo_nome TEXT,
+    linee TEXT,
+    updated_at TEXT
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_anagrafica_pv_nome ON anagrafica_pv(nome)');
+} catch (err) {
+  console.error('Errore creazione anagrafica_pv:', err.message);
+}
+// F11: anagrafica agenti interna (fonte per provisioning users). Importata da
+// anagrafica_agenti.xlsx (FUORI repo). password_hash = bcrypt+PEPPER, mai chiaro.
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS anagrafica_agenti (
+    codice TEXT PRIMARY KEY,
+    nome TEXT,
+    email TEXT,
+    password_hash TEXT,
+    ruolo TEXT,
+    updated_at TEXT
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_anagrafica_agenti_email ON anagrafica_agenti(email)');
+} catch (err) {
+  console.error('Errore creazione anagrafica_agenti:', err.message);
+}
+// Indice resp_codice per il filtro venditore (idempotente).
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_reso_resp_codice ON richieste_reso(resp_codice)');
+} catch (err) {
+  console.error('Errore creazione idx_richieste_reso_resp_codice:', err.message);
+}
+// Indice su num_reso: nello schema.sql viene creato insieme alla tabella (fresh
+// install), ma su DB esistente la colonna num_reso arriva solo dopo la
+// migrazione sopra, quindi l'CREATE INDEX dello schema fallisce (colonna
+// assente) e l'catch sopra lo ingoia. Lo si ricrea qui idempotente per garantire
+// l'indice sia su DB esistenti che fresh.
+try {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_num_reso ON richieste_reso(num_reso)');
+} catch (err) {
+  console.error('Errore creazione idx_richieste_num_reso:', err.message);
+}
+
 export function close() {
   try {
     db.close();

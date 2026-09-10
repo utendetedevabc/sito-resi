@@ -63,6 +63,29 @@ router.get('/csrf-token', (req, res) => {
   res.json({ csrf_token: token });
 });
 
+// GET /api/auth/audit — storico delle PROPRIE azioni (audit_log dell'utente
+// corrente). Disponibile per TUTTI i ruoli (store_account, venditore,
+// customer_service) così ognuno vede la cronologia di ciò che ha fatto
+// (login, resi creati, approvati, rifiutati, annullati). L'admin vede tutto
+// (inclusi gli altri utenti) via /api/admin/audit-log.
+router.get('/audit', authenticate, (req, res) => {
+  const { page = '1', per_page = '25' } = req.query;
+  const limit = Math.min(parseInt(per_page) || 25, 100);
+  const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
+
+  const total = db.prepare('SELECT COUNT(*) as total FROM audit_log WHERE user_id = ?').get(req.user.id).total;
+  const data = db.prepare(
+    `SELECT a.*, u.email as user_email
+     FROM audit_log a
+     LEFT JOIN users u ON a.user_id = u.id
+     WHERE a.user_id = ?
+     ORDER BY a.created_at DESC
+     LIMIT ? OFFSET ?`
+  ).all(req.user.id, limit, offset);
+
+  res.json({ data, total, page: Math.max(parseInt(page) || 1, 1), per_page: limit });
+});
+
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);

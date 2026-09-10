@@ -8,6 +8,12 @@ const MAX_RETRIES = parseInt(process.env.WEBHOOK_RETRY_MAX) || 3;
 const RETRY_DELAYS = (process.env.WEBHOOK_RETRY_DELAYS || '5000,30000,300000')
   .split(',').map(n => parseInt(n.trim()));
 
+// Fail-loud: se WEBHOOK_SECRET è vuoto, firma con chiave vuota -> ABC HUB
+// rifiuta 401 su ogni tentativo -> retry silenziosi fino al esaurimento.
+if (!WEBHOOK_SECRET) {
+  logger.error('WEBHOOK_SECRET non configurato — il webhook sarà firmato con chiave vuota e rifiutato da ABC HUB');
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -19,9 +25,33 @@ export async function sendWebhook(richiesta) {
     bda_hash: richiesta.bda_hash,
     venditore_codice: richiesta.venditore_codice,
     prodotti: richiesta.prodotti,
+    linee: richiesta.linee || null,
+    corriere: richiesta.corriere || null,
+    corriere_nome: richiesta.corriere_nome || null,
+    pv_nome: richiesta.pv_nome || null,
+    pv_indirizzo: richiesta.pv_indirizzo || null,
+    pv_citta: richiesta.pv_citta || null,
+    pv_cap: richiesta.pv_cap || null,
+    pv_provincia: richiesta.pv_provincia || null,
+    pv_regione: richiesta.pv_regione || null,
+    num_reso: richiesta.num_reso ?? null,
     motivo_reso: richiesta.motivo_reso,
     note: richiesta.note,
     data_approvazione: richiesta.data_approvazione,
+    // Campi per export corriere (RITGIO*.xls) — modello vecchio (backward compat)
+    cldm: richiesta.cldm || null,
+    ddt_numero: richiesta.ddt_numero || null,
+    ddt_data: richiesta.ddt_data || null,
+    num_colli: richiesta.num_colli ?? null,
+    bda_autorizzazione: richiesta.bda_autorizzazione || null,
+    // Audit (opzionali, nullable): chi ha creato il reso (richiedente) e chi lo
+    // ha approvato al 1° livello (approvatore). Per CS auto-chiuso coincidono
+    // (l'interno è sia richiedente che approvatore). Backward compat: payload
+    // precedenti senza questi campi restano validi lato ABC HUB (undefined/null).
+    richiedente_nome: richiesta.richiedente_nome ?? null,
+    richiedente_ruolo: richiesta.richiedente_ruolo ?? null,
+    approvatore_nome: richiesta.approvatore_nome ?? null,
+    approvatore_ruolo: richiesta.approvatore_ruolo ?? null,
   };
 
   const body = JSON.stringify(payload);

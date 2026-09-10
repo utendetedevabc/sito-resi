@@ -6,6 +6,12 @@ const nextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   compress: true,
+  // Accessi dev cross-origin: Next.js 16 blocca di default HMR + bundle client
+  // quando l'Origin non è localhost. I tester dal telefono/LAN accedono a
+  // http://192.168.90.147:3002 → senza questo allowlist il bundle client è
+  // bloccato, il server rendera "Caricamento…" ma React NON idrata → pagina
+  // bloccata sul fallback. allowedDevOrigins sblocca HMR + risorse dev.
+  allowedDevOrigins: ['192.168.90.147', 'localhost', '127.0.0.1'],
   images: {
     formats: ['image/avif', 'image/webp'],
     deviceSizes: [390, 640, 768, 1024, 1280],

@@ -5,6 +5,8 @@ import { hashPassword, generateUUID } from '../lib/security.js';
 import { createUserSchema, updateUserSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { refreshAgenti, agentiStatus, listAgenti } from '../lib/agenti.js';
+import { logAudit } from '../lib/audit.js';
 
 const router = Router();
 const PEPPER = process.env.PASSWORD_PEPPER || '';
@@ -97,6 +99,33 @@ router.put('/users/:id', (req, res) => {
   logger.info(`Admin ${req.user.id} ha aggiornato utente ${id}`);
 
   res.json({ success: true });
+});
+
+// --- F11: anagrafica agenti (provisioning users) ---
+
+// POST /api/admin/agenti/refresh — refresh forzato da xlsx.
+router.post('/agenti/refresh', (req, res) => {
+  try {
+    const result = refreshAgenti();
+    logAudit(req.user.id, 'AGENTI_REFRESH', {
+      imported: result.imported, updated: result.updated, total: result.total,
+      unmatched_count: (result.unmatched || []).length, source_exists: result.source_exists,
+    }, req);
+    res.json(result);
+  } catch (err) {
+    logger.error(`Errore refresh agenti: ${err.message}`);
+    res.status(500).json({ error: 'Errore interno del server' });
+  }
+});
+
+// GET /api/admin/agenti/status — stato anagrafica agenti.
+router.get('/agenti/status', (req, res) => {
+  res.json(agentiStatus());
+});
+
+// GET /api/admin/agenti — lista agenti (per review ruoli/unmatched).
+router.get('/agenti', (req, res) => {
+  res.json({ data: listAgenti() });
 });
 
 // GET /api/admin/resi

@@ -4,6 +4,19 @@ import logger from '../lib/logger.js';
 import { approvaResoSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
+import { logAudit } from '../lib/audit.js';
+
+// F11: routing per responsabile. Determina il filtro resp_codice del venditore
+// loggato. Se il suo codice_cliente_esterno matcha un resp_codice in anagrafica_pv,
+// vede solo i resi dei PV a lui assegnati; altrimenti backward-compat (tutti).
+// Ritorna { codice, filter } dove filter e' null (vede tutto) oppure il codice.
+function venditoreRoutingFilter(venditoreId) {
+  const row = db.prepare('SELECT codice_cliente_esterno FROM users WHERE id = ?').get(venditoreId);
+  const codice = row?.codice_cliente_esterno || null;
+  if (!codice) return { codice: null, filter: null };
+  const assegnato = db.prepare('SELECT 1 FROM anagrafica_pv WHERE resp_codice = ? LIMIT 1').get(codice);
+  return { codice, filter: assegnato ? codice : null };
+}
 
 const router = Router();
 
@@ -13,9 +26,18 @@ router.use(authorize('venditore'));
 // GET /api/venditore/richieste — tutti i resi in_attesa degli store
 router.get('/richieste', (req, res) => {
   const { stato, data_da, data_a, page = '1', per_page = '20' } = req.query;
+  const { filter: respFilter } = venditoreRoutingFilter(req.user.id);
 
   let where = "WHERE r.stato = 'in_attesa' AND u.ruolo = 'store_account'";
   const params = [];
+
+  if (respFilter) {
+    where += ' AND r.resp_codice = ?';
+    params.push(respFilter);
+  } else {
+    // backward-compat: nessuna assegnazione territoriale -> vede tutti gli in_attesa
+    // (inclusi resi pre-F11 con resp_codice NULL)
+  }
 
   if (data_da) {
     where += " AND date(r.created_at) >= date(?)";
@@ -49,13 +71,19 @@ router.get('/richieste', (req, res) => {
 // GET /api/venditore/richieste/:uuid
 router.get('/richieste/:uuid', (req, res) => {
   const { uuid } = req.params;
+  const { filter: respFilter } = venditoreRoutingFilter(req.user.id);
+
+  const where = respFilter
+    ? "WHERE r.uuid = ? AND r.stato = 'in_attesa' AND u.ruolo = 'store_account' AND r.resp_codice = ?"
+    : "WHERE r.uuid = ? AND r.stato = 'in_attesa' AND u.ruolo = 'store_account'";
+  const params = respFilter ? [uuid, respFilter] : [uuid];
 
   const richiesta = db.prepare(
     `SELECT r.*, u.nome as richiedente_nome, u.azienda as richiedente_azienda
      FROM richieste_reso r
      JOIN users u ON r.user_id = u.id
-     WHERE r.uuid = ? AND r.stato = 'in_attesa' AND u.ruolo = 'store_account'`
-  ).get(uuid);
+     ${where}`
+  ).get(...params);
 
   if (!richiesta) {
     return res.status(404).json({ error: 'Richiesta non trovata' });
@@ -81,11 +109,18 @@ router.put('/richieste/:uuid', (req, res) => {
 
   const { stato, note } = parsed.data;
 
+  const { filter: respFilter } = venditoreRoutingFilter(venditoreId);
+
+  const where = respFilter
+    ? "WHERE r.uuid = ? AND r.stato = 'in_attesa' AND u.ruolo = 'store_account' AND r.resp_codice = ?"
+    : "WHERE r.uuid = ? AND r.stato = 'in_attesa' AND u.ruolo = 'store_account'";
+  const params = respFilter ? [uuid, respFilter] : [uuid];
+
   const existing = db.prepare(
     `SELECT r.* FROM richieste_reso r
      JOIN users u ON r.user_id = u.id
-     WHERE r.uuid = ? AND r.stato = 'in_attesa' AND u.ruolo = 'store_account'`
-  ).get(uuid);
+     ${where}`
+  ).get(...params);
 
   if (!existing) {
     return res.status(404).json({ error: 'Richiesta non trovata o già processata' });
@@ -101,6 +136,7 @@ router.put('/richieste/:uuid', (req, res) => {
   ).run(nuovoStato, note || null, dataApprovazione, venditoreId, uuid);
 
   logger.info(`Richiesta ${uuid} ${nuovoStato} da venditore ${venditoreId}`);
+  logAudit(venditoreId, stato === 'approvato' ? 'RESO_APPROVATO_1' : 'RESO_RIFIUTATO_1', { uuid, stato: nuovoStato, note: note || null }, req);
 
   res.json({ success: true, stato: nuovoStato });
 });
