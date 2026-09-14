@@ -152,6 +152,101 @@ function fraseMotivo(motivoReso, note) {
   return n ? `${label} - ${n}` : label;
 }
 
+// Escape HTML per i valori interpolati nel template (pv_*, note, linee...).
+function esc(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// --- Costruzione HTML (stile notifiche ABC HUB email-sender.js) ---
+// Header blu #1e40af + card con bordo + tabella dettagli, come le email di
+// notifica di consegna. Tutto inline-style per compatibilita' client mail.
+export function buildResoAutorizzazioneHtml(richiesta) {
+  const numReso = placeholder(richiesta.num_reso);
+  const cldmPad10 = richiesta.cldm ? String(richiesta.cldm).padStart(10, '0') : null;
+  const pvNome = placeholder(richiesta.pv_nome);
+  const ddtNumero = placeholder(richiesta.ddt_numero);
+  const ddtData = placeholder(richiesta.ddt_data);
+  const numColli = placeholder(richiesta.num_colli);
+
+  // Riga per ogni linea prodotto: "Linea Viso — 3 pezzi"
+  const lineeArr = parseLinee(richiesta.linee);
+  const totalePezzi = lineeArr.reduce((s, l) => s + (Number(l.numero_pezzi) || 0), 0);
+  const lineeRows = lineeArr.length
+    ? lineeArr.map((l) => `
+          <tr>
+            <th scope="row" style="padding:8px 12px;font-weight:600;color:#374151;border-bottom:1px solid #f3f4f6;width:120px;text-align:left;vertical-align:top;">${esc(l.nome || 'Linea')}</th>
+            <td style="padding:8px 12px;color:#1f2937;border-bottom:1px solid #f3f4f6;">${Number(l.numero_pezzi) || 0} pezzi</td>
+          </tr>`).join('')
+    : `
+          <tr>
+            <th scope="row" style="padding:8px 12px;font-weight:600;color:#374151;border-bottom:1px solid #f3f4f6;width:120px;text-align:left;vertical-align:top;">Prodotti</th>
+            <td style="padding:8px 12px;color:#1f2937;border-bottom:1px solid #f3f4f6;">—</td>
+          </tr>`;
+
+  const motivoLabel = MOTIVO_RESO_LABEL[richiesta.motivo_reso] || (richiesta.motivo_reso ? String(richiesta.motivo_reso) : '—');
+  const note = richiesta.note ? String(richiesta.note).trim() : '';
+  const motivoVal = note ? `${esc(motivoLabel)} — ${esc(note)}` : esc(motivoLabel);
+
+  // Banner giallo in testMode, identico a quello di ABC HUB.
+  const recipients = getRecipients().join(', ');
+  const testBanner = testMode
+    ? `<div style="background:#fef3c7;border:1px solid #f59e0b;color:#92400e;padding:10px 16px;border-radius:6px 6px 0 0;font-size:13px;font-family:Arial,Helvetica,sans-serif;text-align:center;"><strong>MODALITÀ TEST</strong> — Questa email sarebbe stata inviata a <strong>${esc(recipients)}</strong></div>`
+    : '';
+
+  return `
+<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;padding:20px;">
+  ${testBanner}
+  <div style="background:#1e40af;color:#fff;padding:16px 20px;border-radius:8px 8px 0 0;">
+    <h2 style="margin:0;font-size:17px;">Autorizzazione al Reso n. ${esc(numReso)}</h2>
+  </div>
+  <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;padding:20px;">
+    <p style="margin:0 0 4px;font-size:15px;color:#1f2937;">Con la presente vi preghiamo recarvi presso il nostro cliente:</p>
+    <p style="margin:4px 0 12px;font-size:15px;color:#1f2937;">
+      <strong>${esc(pvNome)}</strong><br>
+      <span style="color:#4b5563;font-size:14px;">${cldmPad10 ? `Codice Interno ${esc(cldmPad10)}<br>` : ''}${esc(richiesta.pv_indirizzo || '')}${richiesta.pv_indirizzo ? '<br>' : ''}${esc(richiesta.pv_cap || '')} ${esc(richiesta.pv_citta || '')} (${esc(richiesta.pv_provincia || '')})</span>
+    </p>
+    <p style="margin:0 0 16px;font-size:15px;color:#1f2937;">
+      e provvedere al <strong>ritiro</strong> e alla successiva <strong>consegna al nostro magazzino</strong> sito in Via Industria s/n, Pozzolo Formigaro (AL).
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:14px;border-top:1px solid #e5e7eb;">
+      <tr>
+        <th scope="row" style="padding:8px 12px;font-weight:600;color:#374151;border-bottom:1px solid #f3f4f6;width:120px;text-align:left;vertical-align:top;">Bolla DDT</th>
+        <td style="padding:8px 12px;color:#1f2937;border-bottom:1px solid #f3f4f6;font-family:monospace;">${esc(ddtNumero)}</td>
+      </tr>
+      <tr>
+        <th scope="row" style="padding:8px 12px;font-weight:600;color:#374151;border-bottom:1px solid #f3f4f6;text-align:left;vertical-align:top;">Data DDT</th>
+        <td style="padding:8px 12px;color:#1f2937;border-bottom:1px solid #f3f4f6;">${esc(ddtData)}</td>
+      </tr>
+      <tr>
+        <th scope="row" style="padding:8px 12px;font-weight:600;color:#374151;border-bottom:1px solid #f3f4f6;text-align:left;vertical-align:top;">Colli</th>
+        <td style="padding:8px 12px;color:#1f2937;border-bottom:1px solid #f3f4f6;">${esc(numColli)}</td>
+      </tr>
+      ${lineeRows}
+      <tr>
+        <th scope="row" style="padding:8px 12px;font-weight:600;color:#374151;border-bottom:1px solid #f3f4f6;text-align:left;vertical-align:top;">Totale pezzi</th>
+        <td style="padding:8px 12px;color:#1f2937;border-bottom:1px solid #f3f4f6;">${totalePezzi}</td>
+      </tr>
+      <tr>
+        <th scope="row" style="padding:8px 12px;font-weight:600;color:#374151;text-align:left;vertical-align:top;">Motivo reso</th>
+        <td style="padding:8px 12px;color:#1f2937;">${motivoVal}</td>
+      </tr>
+    </table>
+
+    <div style="background:#f3f4f6;border:1px solid #e5e7eb;padding:10px 16px;border-radius:6px;font-size:13px;color:#374151;margin-top:16px;">
+      La presente autorizzazione dovra' essere allegata alla bolla di accompagnamento al momento del reso presso il nostro magazzino.
+    </div>
+  </div>
+  <p style="text-align:center;color:#9ca3af;font-size:11px;margin-top:12px;">
+    Si prega di non rispondere a questo messaggio, per ulteriori informazioni contattare il customer service<br>
+    ABC Italia — Autorizzazione generata automaticamente dal sistema resi
+  </p>
+</div>`;
+}
 // --- Costruzione testo (corpo unico, usato sia per text/plain sia per PDF) ---
 export function buildResoAutorizzazioneText(richiesta) {
   const numReso = placeholder(richiesta.num_reso);
@@ -267,6 +362,7 @@ export async function sendResoAutorizzazioneEmail(richiesta) {
     to: toAddr,
     subject: testMode ? `[TEST → ${recipients.join(', ')}] ${subject}` : subject,
     text,
+    html: buildResoAutorizzazioneHtml(richiesta),
     attachments: [
       { filename, content: pdfBuf, contentType: 'application/pdf' },
     ],
