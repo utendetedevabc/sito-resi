@@ -23,6 +23,9 @@ data/*.db
 data/*.db-journal
 data/*.backup
 data/*.corrupt
+# Backup manuale/automatici (dati personali in chiaro: MAI nel repo)
+data/*.bak*
+data/backups/
 
 # Logs
 *.log

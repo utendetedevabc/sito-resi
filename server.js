@@ -17,6 +17,7 @@ import db, { close } from './server/lib/db.js';
 import logger from './server/lib/logger.js';
 import { refreshAnagrafica } from './server/lib/anagrafica.js';
 import { refreshAgenti } from './server/lib/agenti.js';
+import { scheduleDbBackups, stopDbBackupScheduler } from './server/lib/backup.js';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT) || 3002;
@@ -102,11 +103,16 @@ app.prepare().then(() => {
   }
   scheduleNextAnagraficaRefresh();
 
+  // Backup automatico del DB: snapshot post-avvio + giornaliero (default 03:00),
+  // retention 30 giorni. Vedi server/lib/backup.js.
+  scheduleDbBackups();
+
   // Graceful shutdown
   function shutdown(signal) {
     logger.info(`Ricevuto ${signal}, shutdown graceful...`);
     clearTimeout(anagraficaTimer);
     clearInterval(anagraficaInterval);
+    stopDbBackupScheduler();
     httpServer.close(() => {
       close();
       logger.info('Server chiuso.');

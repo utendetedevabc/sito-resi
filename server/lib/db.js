@@ -27,6 +27,14 @@ if (DB_KEY) {
   } catch (err) {
     console.warn('SQLCipher non disponibile, uso SQLite standard');
   }
+  // GOTCHA: con better-sqlite3 SENZA supporto SQLCipher, `PRAGMA key` non lancia
+  // nulla — e' un no-op silenzioso, il DB resterebbe in chiaro senza avviso.
+  // `PRAGMA cipher_version` restituisce dati solo nelle build con cipher:
+  // e' il modo affidabile per sapere se la cifratura e' davvero attiva.
+  const cipher = db.pragma('cipher_version');
+  if (!cipher || cipher.length === 0) {
+    console.error('⚠ SQLCIPHER NON ATTIVO: DB_ENCRYPTION_KEY impostata ma questa build di better-sqlite3 non supporta la cifratura — il DB su disco e\' IN CHIARO.');
+  }
 }
 
 // General pragmas
