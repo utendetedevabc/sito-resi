@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from 'better-sqlite3-multiple-ciphers';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -16,24 +16,31 @@ if (!existsSync(dbDir)) {
 
 const db = new Database(DB_PATH);
 
-// Apply SQLCipher settings if key is provided
+// Cifratura a riposo (sqlite3mc = fork di better-sqlite3 con supporto multi-cipher,
+// migrazione 14/09). Si imposta SOLO `key`: i parametri cipher_* del vecchio
+// SQLCipher (page_size, kdf_iter, algoritmi...) non sono portabili tra build,
+// mentre i default di sqlite3mc sono forti e restano coerenti tra il file
+// migrato e ogni successiva apertura.
 if (DB_KEY) {
   try {
     db.pragma(`key = "${DB_KEY}"`);
-    db.pragma('cipher_page_size = 4096');
-    db.pragma('kdf_iter = 256000');
-    db.pragma('cipher_hmac_algorithm = HMAC_SHA512');
-    db.pragma('cipher_kdf_algorithm = PBKDF2_HMAC_SHA512');
   } catch (err) {
-    console.warn('SQLCipher non disponibile, uso SQLite standard');
+    console.error(`Impossibile impostare la chiave di cifratura: ${err.message}`);
   }
-  // GOTCHA: con better-sqlite3 SENZA supporto SQLCipher, `PRAGMA key` non lancia
-  // nulla — e' un no-op silenzioso, il DB resterebbe in chiaro senza avviso.
-  // `PRAGMA cipher_version` restituisce dati solo nelle build con cipher:
-  // e' il modo affidabile per sapere se la cifratura e' davvero attiva.
-  const cipher = db.pragma('cipher_version');
-  if (!cipher || cipher.length === 0) {
-    console.error('⚠ SQLCIPHER NON ATTIVO: DB_ENCRYPTION_KEY impostata ma questa build di better-sqlite3 non supporta la cifratura — il DB su disco e\' IN CHIARO.');
+  // GOTCHA (appreso 14/09): con una build SENZA supporto cipher `PRAGMA key` e'
+  // un no-op silenzioso — il DB resterebbe in chiaro SENZA alcun errore.
+  // Controllo affidabile e indipendente dalla build: il file su disco NON deve
+  // portare la firma plaintext di SQLite.
+  try {
+    const fd = fs.openSync(DB_PATH, 'r');
+    const buf = Buffer.alloc(16);
+    fs.readSync(fd, buf, 0, 16, 0);
+    fs.closeSync(fd);
+    if (buf.toString('latin1').startsWith('SQLite format 3')) {
+      console.error('⚠ DB IN CHIARO: DB_ENCRYPTION_KEY impostata ma il file NON e\' cifrato.');
+    }
+  } catch {
+    // file appena creato o non ancora scritto: niente da verificare
   }
 }
 

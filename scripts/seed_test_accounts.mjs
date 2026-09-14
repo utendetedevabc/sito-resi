@@ -5,7 +5,7 @@
 //   interno      (customer_service)-> approvazione finale          -> approvato + webhook ABC HUB
 // Password DEV: TestResi123!  (bcrypt + PASSWORD_PEPPER, come seed.js)
 import 'dotenv/config';
-import Database from 'better-sqlite3';
+import Database from 'better-sqlite3-multiple-ciphers';
 import bcrypt from 'bcryptjs';
 
 const DB_PATH = process.env.DB_PATH || './data/resi.db';

@@ -8,7 +8,7 @@
 import path from 'path';
 import fs from 'fs';
 import XLSX from 'xlsx';
-import Database from 'better-sqlite3';
+import Database from 'better-sqlite3-multiple-ciphers';
 
 // Path del db anagrafica punti vendita. Default: quello di ABC HUB (dev).
 const PV_DB_PATH = process.env.PV_DB_PATH
