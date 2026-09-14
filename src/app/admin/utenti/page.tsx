@@ -275,11 +275,11 @@ export default function AdminUtentiPage() {
               <input
                 type="password"
                 required
-                minLength={12}
-                aria-label="Password (minimo 12 caratteri)"
+                minLength={8}
+                aria-label="Password (minimo 8 caratteri)"
                 value={form.password}
                 onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                placeholder="Password (min 12 caratteri)"
+                placeholder="Password (min 8 caratteri)"
                 className="input-mobile"
               />
               <input
@@ -518,7 +518,7 @@ export default function AdminUtentiPage() {
                   <input
                     id="edit-password"
                     type="password"
-                    minLength={12}
+                    minLength={8}
                     autoComplete="new-password"
                     value={editForm.password}
                     onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
@@ -526,7 +526,7 @@ export default function AdminUtentiPage() {
                     className="input-mobile"
                   />
                   <p className="text-xs text-gray-500 mt-1">
-                    Minimo 12 caratteri. Compila solo per reimpostare la password.
+                    Minimo 8 caratteri. Compila solo per reimpostare la password.
                   </p>
                 </div>
 

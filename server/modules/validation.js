@@ -10,7 +10,7 @@ const ORDINE_REGEX = /^[A-Za-z0-9\-_\/]{3,50}$/;
 const BDA_REGEX = /^\d{1,15}$/;
 
 // Login: la lunghezza minima della password è una policy di CREAZIONE
-// (enforced in createUserSchema riga 75, min(12)), NON di verifica login.
+// (enforced in createUserSchema, min(8)), NON di verifica login.
 // Il login accetta qualsiasi password non-vuota e delega a verifyPassword
 // (auth.js:121) il controllo dell'hash bcrypt — una password sbagliata di
 // qualsiasi lunghezza fallisce comunque. Necessario per F11: provisioning
@@ -85,7 +85,9 @@ export const exportResiSchema = z.object({
 
 export const createUserSchema = z.object({
   email: z.string().email().max(255).transform(sanitize),
-  password: z.string().min(12).max(128),
+  // min(8): le password di provisioning da anagrafica_agenti.xlsx sono 8/10
+  // char — la soglia 12 le avrebbe rifiutate (incoerenza col provisioning).
+  password: z.string().min(8).max(128),
   ruolo: z.enum(['store_account', 'venditore', 'admin', 'customer_service']),
   nome: z.string().min(1).max(255).transform(sanitize),
   azienda: z.string().max(255).transform(sanitize).optional().nullable(),
@@ -106,14 +108,14 @@ export const updateUserSchema = z.object({
   codice_cliente_esterno: z.string().max(50).transform(sanitize).optional().nullable(),
   attivo: z.number().int().min(0).max(1).optional(),
   // Reset password opzionale su utente esistente: accetta assente/'' (non
-  // modificare) oppure una stringa >=12 char (come createUserSchema). Non
-  // sanificata (coerente con createUserSchema password) — la password può
-  // contenere qualsiasi carattere.
+  // modificare) oppure una stringa >=8 char (come createUserSchema, coerente
+  // col provisioning da xlsx). Non sanificata (coerente con createUserSchema
+  // password) — la password può contenere qualsiasi carattere.
   password: z.string()
     .max(128)
     .optional()
-    .refine((v) => v === undefined || v === '' || (typeof v === 'string' && v.length >= 12), {
-      message: 'Password minimo 12 caratteri',
+    .refine((v) => v === undefined || v === '' || (typeof v === 'string' && v.length >= 8), {
+      message: 'Password minimo 8 caratteri',
       path: ['password'],
     }),
   csrf_token: z.string().optional(),
