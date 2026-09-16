@@ -29,6 +29,9 @@ export const creaResoSchema = z.object({
   numero_ordine: z.string().regex(ORDINE_REGEX, 'Formato ordine non valido').transform(sanitize).optional().nullable(),
   bda: z.string().regex(BDA_REGEX, 'BDA deve contenere solo numeri').optional().nullable(),
   motivo_reso: z.enum(['difettoso', 'errato', 'non_conforme', 'altro']),
+  // 2026-09-16: motivazione manuale, obbligatoria solo quando motivo_reso='altro'
+  // (il refine in fondo allo schema la richiede). Non sanificata qui: lo e'.
+  motivo_altro: z.string().min(3).max(500).transform(s => sanitize(s).substring(0, 500)).optional(),
   note: z.string().max(2000).transform(s => sanitize(s).substring(0, 2000)).optional(),
   // Campi per export corriere (manifest RITGIO*.xls). Tutti opzionali.
   cldm: z.string().regex(CLDM_REGEX, 'CLDM non valido').transform(sanitize),
@@ -64,6 +67,11 @@ export const creaResoSchema = z.object({
 }).refine(
   (d) => d.corriere !== 'ALTRI' || (typeof d.corriere_nome === 'string' && d.corriere_nome.trim().length >= 1),
   { message: 'Nome corriere obbligatorio quando si seleziona ALTRI', path: ['corriere_nome'] }
+).refine(
+  // "Altro" richiede la motivazione manuale (richiesta operatori 2026-09-16:
+  // prima il campo non esisteva e il PV non poteva spiegare il motivo).
+  (d) => d.motivo_reso !== 'altro' || (typeof d.motivo_altro === 'string' && d.motivo_altro.trim().length >= 3),
+  { message: 'Se il motivo è Altro, indica la motivazione', path: ['motivo_altro'] }
 );
 
 export const approvaResoSchema = z.object({
@@ -81,6 +89,15 @@ export const csResoSchema = z.object({
 // Limite 500 per evitare abuse/timeout; min 1 perche' l'azione e' no-op senza uuid.
 export const exportResiSchema = z.object({
   uuids: z.array(z.string().uuid()).min(1).max(500),
+});
+
+// 2026-09-16 P4: azione massiva CS sulla coda "Da gestire" (in_revisione) —
+// approvazione/rifiuto di piu' resi in un colpo. La nota (opzionale per scelta
+// utente) e' condivisa: viene scritta in note_venditori di tutti i selezionati.
+export const batchCsSchema = z.object({
+  uuids: z.array(z.string().uuid()).min(1).max(500),
+  stato: z.enum(['approvato', 'rifiutato']),
+  note: z.string().max(2000).transform(s => sanitize(s).substring(0, 2000)).optional(),
 });
 
 export const createUserSchema = z.object({

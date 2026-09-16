@@ -18,9 +18,11 @@ const pvDb = fs.existsSync(PV_DB_PATH)
   ? new Database(PV_DB_PATH, { readonly: true })
   : null;
 
-// Destinatario fisso = magazzino corriere (config via env).
+// Destinatario fisso = magazzino corriere (config via env). Il 2026-09-16 il
+// default e' stato corretto in 'ABC ITALIA RESI' (richiesta corriere: cosi'
+// seleziona il codice di contratto corretto).
 const CARRIER_DEST = {
-  ragione_sociale: process.env.RESI_CARRIER_DEST_NAME || 'ABC SRL RESI',
+  ragione_sociale: process.env.RESI_CARRIER_DEST_NAME || 'ABC ITALIA RESI',
   indirizzo: process.env.RESI_CARRIER_DEST_ADDR || 'Via Industria s/n',
   citta: process.env.RESI_CARRIER_DEST_CITY || 'Pozzolo Formigaro',
   prov: process.env.RESI_CARRIER_DEST_PROV || 'AL',

@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import db from '../lib/db.js';
 import logger from '../lib/logger.js';
-import { csResoSchema, exportResiSchema } from './validation.js';
+import { csResoSchema, exportResiSchema, batchCsSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
@@ -13,9 +13,12 @@ import { buildResiXls, pvDbAvailable } from '../lib/xls-export.js';
 import { sendResoAutorizzazioneEmail } from '../lib/resi-email.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Cartella dove salvare il file GLS giornaliero aggregato su disco
-// (configurabile via env; default Scrivania dell'utente, scrivibile in dev).
-const GLS_EXPORT_DIR = process.env.GLS_EXPORT_DIR || '/home/adimn/Scrivania';
+// Cartella dove salvare il file GLS giornaliero aggregato su disco.
+// Default: VUOTA = nessuna scrittura su disco (2026-09-16, richiesta utente: niente
+// piu' file di recap sparsi sulla Scrivania — il download via browser basta).
+// Per riattivare la copia su disco, impostare GLS_EXPORT_DIR (es. ./data/exports,
+// cartella di progetto ignorata da git).
+const GLS_EXPORT_DIR = process.env.GLS_EXPORT_DIR || '';
 
 const router = Router();
 
@@ -25,6 +28,65 @@ const STATI_EXPORTABILI = ['approvato', 'spedito', 'completato'];
 
 router.use(authenticate);
 router.use(authorize('customer_service'));
+
+// Notifiche post-approvazione definitiva del 2° livello (webhook ad ABC HUB +
+// email di autorizzazione). Condivisa dal PUT singolo e dall'azione massiva:
+// entrambi fire-and-forget, non bloccano mai la risposta HTTP (retry 5s/30s/300s,
+// il processo server e' long-running quindi l'async in background completa).
+function notificaApprovazioneReso(existing) {
+  const uuid = existing.uuid;
+  const venditore = db.prepare('SELECT codice_cliente_esterno FROM users WHERE id = ?').get(existing.venditore_id || existing.user_id);
+  const richiestaAggiornata = db.prepare('SELECT * FROM richieste_reso WHERE uuid = ?').get(uuid);
+
+  // Audit (opzionali, nullable): richiedente = utente che ha creato il reso
+  // (user_id), approvatore = venditore responsabile 1° livello (venditore_id).
+  // Se venditore_id è NULL (reso pre-F11 o store_account senza routing), si
+  // invia null per approvatore_* — il webhook non si blocca.
+  const richiedente = db.prepare('SELECT nome, ruolo FROM users WHERE id = ?').get(existing.user_id);
+  const approvatore = existing.venditore_id
+    ? db.prepare('SELECT nome, ruolo FROM users WHERE id = ?').get(existing.venditore_id)
+    : null;
+
+  sendWebhook({
+    id_richiesta: uuid,
+    numero_ordine: richiestaAggiornata.numero_ordine_esterno,
+    bda_hash: richiestaAggiornata.bda_hash,
+    venditore_codice: venditore?.codice_cliente_esterno || '',
+    prodotti: richiestaAggiornata.prodotti ? JSON.parse(richiestaAggiornata.prodotti) : [],
+    linee: richiestaAggiornata.linee ? JSON.parse(richiestaAggiornata.linee) : [],
+    corriere: richiestaAggiornata.corriere || null,
+    corriere_nome: richiestaAggiornata.corriere_nome || null,
+    pv_nome: richiestaAggiornata.pv_nome || null,
+    pv_indirizzo: richiestaAggiornata.pv_indirizzo || null,
+    pv_citta: richiestaAggiornata.pv_citta || null,
+    pv_cap: richiestaAggiornata.pv_cap || null,
+    pv_provincia: richiestaAggiornata.pv_provincia || null,
+    pv_regione: richiestaAggiornata.pv_regione || null,
+    num_reso: richiestaAggiornata.num_reso ?? null,
+    motivo_reso: richiestaAggiornata.motivo_reso,
+    motivo_altro: richiestaAggiornata.motivo_altro || null,
+    note: richiestaAggiornata.note,
+    data_approvazione: richiestaAggiornata.data_approvazione,
+    // Campi per export corriere (RITGIO*.xls) — modello vecchio (backward compat)
+    cldm: richiestaAggiornata.cldm || null,
+    ddt_numero: richiestaAggiornata.ddt_numero || null,
+    ddt_data: richiestaAggiornata.ddt_data || null,
+    num_colli: richiestaAggiornata.num_colli ?? null,
+    bda_autorizzazione: richiestaAggiornata.bda_autorizzazione || null,
+    richiedente_nome: richiedente?.nome ?? null,
+    richiedente_ruolo: richiedente?.ruolo ?? null,
+    approvatore_nome: approvatore?.nome ?? null,
+    approvatore_ruolo: approvatore?.ruolo ?? null,
+  }).catch((err) => logger.error(`Webhook fallito per ${uuid}: ${err.message}`));
+
+  // Email di autorizzazione al reso (testo + HTML) alle destinatarie fisse.
+  // Fire-and-forget: non blocca la risposta HTTP. Se SMTP non configurato o env
+  // RESI_AUTORIZZAZIONE_EMAIL_ON=0 → skip silente. Usa la riga completa appena
+  // aggiornata cosi' i campi pv_*/ddt_*/linee/motivo sono quelli correnti.
+  sendResoAutorizzazioneEmail(richiestaAggiornata).catch((err) =>
+    logger.error(`Email autorizzazione fallita per ${uuid}: ${err.message}`)
+  );
+}
 
 // GET /api/customer-service/richieste — resi da gestire (3 view + search).
 //   ?view=da_approvare (default) → resi in_revisione (coda approvazione).
@@ -113,7 +175,7 @@ router.get('/richieste', (req, res) => {
   const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
 
   const dataStmt = db.prepare(
-    `SELECT r.id, r.uuid, r.numero_ordine_esterno, r.motivo_reso, r.stato, r.note, r.note_venditore, r.data_approvazione, r.created_at,
+    `SELECT r.id, r.uuid, r.numero_ordine_esterno, r.motivo_reso, r.motivo_altro, r.stato, r.note, r.note_venditore, r.data_approvazione, r.created_at,
             r.cldm, r.ddt_numero, r.num_colli, r.bda_autorizzazione,
             r.num_reso, r.data_spedizione, r.corriere, r.corriere_nome,
             u.nome as richiedente_nome, u.azienda as richiedente_azienda,
@@ -189,10 +251,104 @@ router.post('/richieste/export', (req, res) => {
   res.send(Buffer.from(buf));
 });
 
+// POST /api/customer-service/richieste/azione-batch — approvazione/rifiuto
+// massivo sulla coda "Da approvare" (2026-09-16 P4, richiesta operatori).
+//   Body: { uuids: string[] (1..500), stato: 'approvato'|'rifiutato', note?: string }.
+//   - Idempotente come l'export: solo i resi con stato='in_revisione' vengono
+//     aggiornati (gia' processati/annullati sono skippati dal WHERE e restituiti
+//     solo come uuids_saltati, nessun errore).
+//   - Atomicita': db.transaction — o tutti i selezionati cambiano stato o nessuno.
+//   - La nota (opzionale per scelta utente) e' condivisa: COALESCE mantiene le
+//     note_venditore esistenti quando non viene fornita.
+//   - Per ogni approvato partono webhook + email (notificaApprovazioneReso,
+//     fire-and-forget — non bloccano la risposta nemmeno in batch).
+router.post('/richieste/azione-batch', (req, res) => {
+  const parsed = batchCsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
+  }
+  const { uuids, stato, note } = parsed.data;
+
+  const placeholders = uuids.map(() => '?').join(',');
+  // Solo in_revisione: resi gia' processati sono skippati (idempotente).
+  const resi = db.prepare(
+    `SELECT * FROM richieste_reso WHERE uuid IN (${placeholders}) AND stato = 'in_revisione'`
+  ).all(...uuids);
+
+  if (resi.length === 0) {
+    return res.status(404).json({ error: 'Nessun reso da approvare selezionato' });
+  }
+
+  const dataApprovazione = new Date().toISOString();
+  const tx = db.transaction(() => {
+    for (const r of resi) {
+      db.prepare(
+        `UPDATE richieste_reso SET
+         stato = ?, note_venditore = COALESCE(?, note_venditore), data_approvazione = ?, updated_at = datetime('now')
+         WHERE uuid = ? AND stato = 'in_revisione'`
+      ).run(stato, note || null, dataApprovazione, r.uuid);
+    }
+  });
+  tx();
+
+  const uuidsAggiornati = resi.map((r) => r.uuid);
+  const uuidsSaltati = uuids.filter((u) => !uuidsAggiornati.includes(u));
+
+  logger.info(`Batch CS: ${resi.length} resi → ${stato} da CS ${req.user.id}`);
+  logAudit(req.user.id, stato === 'approvato' ? 'RESO_BATCH_APPROVAZIONE' : 'RESO_BATCH_RIFIUTO',
+    { count: resi.length, uuids: uuidsAggiornati, stato, note: note || null }, req);
+
+  // Per ogni approvato: webhook ad ABC HUB + email di autorizzazione
+  // (fire-and-forget, stessa funzione del PUT singolo).
+  if (stato === 'approvato') {
+    for (const r of resi) {
+      notificaApprovazioneReso(r);
+    }
+  }
+
+  res.json({ success: true, stato, aggiornati: resi.length, uuids_saltati: uuidsSaltati });
+});
+
+// POST /api/customer-service/richieste/ristampa-xls — ristampa del report XLS
+// multi-riga dei resi selezionati nella tab "Inviati" (2026-09-16 P4).
+//   Body: { uuids: string[] } (1..500 uuid validi, stesso schema dell'export).
+//   - Solo resi spedito/completato: la ristampa NON cambia stato e NON scrive
+//     su disco (nessun file di recap — richiesta utente).
+//   - buildResiXls genera un unico worksheet multi-riga (riuso).
+router.post('/richieste/ristampa-xls', (req, res) => {
+  const parsed = exportResiSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
+  }
+  const { uuids } = parsed.data;
+
+  const placeholders = uuids.map(() => '?').join(',');
+  const resi = db.prepare(
+    `SELECT * FROM richieste_reso WHERE uuid IN (${placeholders}) AND stato IN ('spedito','completato')`
+  ).all(...uuids);
+
+  if (resi.length === 0) {
+    return res.status(404).json({ error: 'Nessun reso spedito selezionato' });
+  }
+
+  try {
+    const { buf, dataCreazione } = buildResiXls(resi);
+    const filename = `RITGIO_ristampa_${dataCreazione}.xls`;
+    logger.info(`Ristampa XLS: ${resi.length} resi da CS ${req.user.id}`);
+    logAudit(req.user.id, 'RESI_RISTAMPA_XLS', { count: resi.length, uuids }, req);
+    res.setHeader('Content-Type', 'application/vnd.ms-excel');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(Buffer.from(buf));
+  } catch (err) {
+    logger.error(`Errore ristampa XLS: ${err.message}`);
+    res.status(500).json({ error: 'Errore generazione file corriere', detail: err.message });
+  }
+});
+
 // GET /api/customer-service/gls/giornaliero?data=YYYY-MM-DD (default oggi)
 // File GLS giornaliero aggregato: tutti i resi approvati dall'interno nella
 // giornata con corriere=GLS. Una riga per reso, header 16-col RITGIO invariato.
-// Salva su disco (RITGIO_GLS_<DDMMYY>.xls) + stream download.
+// Stream download (+ copia su disco SOLO se GLS_EXPORT_DIR e' impostata).
 router.get('/gls/giornaliero', (req, res) => {
   const dataParam = req.query.data || new Date().toISOString().split('T')[0];
   const rows = db.prepare(
@@ -209,9 +365,15 @@ router.get('/gls/giornaliero', (req, res) => {
     const { buf, filename } = buildResiXls(rows);
     // nome file distintivo per il giornaliero aggregato
     const glsFilename = filename.replace('RITGIO_', 'RITGIO_GLS_');
-    const outPath = path.join(GLS_EXPORT_DIR, glsFilename);
-    try { fs.writeFileSync(outPath, Buffer.from(buf)); } catch (e) {
-      logger.error(`Scrittura file GLS su disco fallita: ${e.message}`);
+    // Copia su disco solo se GLS_EXPORT_DIR e' impostata (default: disattivata).
+    if (GLS_EXPORT_DIR) {
+      try {
+        if (!fs.existsSync(GLS_EXPORT_DIR)) fs.mkdirSync(GLS_EXPORT_DIR, { recursive: true });
+        const outPath = path.join(GLS_EXPORT_DIR, glsFilename);
+        fs.writeFileSync(outPath, Buffer.from(buf));
+      } catch (e) {
+        logger.error(`Scrittura file GLS su disco fallita: ${e.message}`);
+      }
     }
     logger.info(`File GLS giornaliero generato: ${glsFilename} (${rows.length} resi) da CS ${req.user.id}`);
     logAudit(req.user.id, 'GLS_EXPORT_GIORNALIERO', { filename: glsFilename, count: rows.length, data: dataParam }, req);
@@ -312,64 +474,10 @@ router.put('/richieste/:uuid', async (req, res) => {
   logger.info(`Richiesta ${uuid} ${stato} da customer_service ${csId}`);
   logAudit(csId, stato === 'approvato' ? 'RESO_APPROVATO_FINALE' : 'RESO_RIFIUTATO_FINALE', { uuid, stato, note: note || null }, req);
 
-  // Se approvata, invia webhook ad ABC HUB.
-  // Fire-and-forget: risponde subito al client, il webhook gira in background.
-  // Con retry 5s/30s/300s, awaitare bloccherebbe l'UI CS fino a ~5.5min se
-  // l'endpoint è down/401. Il processo server è long-running quindi l'async
-  // in background completa senza essere troncato.
+  // Se approvata, invia webhook ad ABC HUB + email di autorizzazione
+  // (funzione condivisa con l'azione massiva, fire-and-forget).
   if (stato === 'approvato') {
-    const venditore = db.prepare('SELECT codice_cliente_esterno FROM users WHERE id = ?').get(existing.venditore_id || existing.user_id);
-    const richiestaAggiornata = db.prepare('SELECT * FROM richieste_reso WHERE uuid = ?').get(uuid);
-
-    // Audit (opzionali, nullable): richiedente = utente che ha creato il reso
-    // (user_id), approvatore = venditore responsabile 1° livello (venditore_id).
-    // Se venditore_id è NULL (reso pre-F11 o store_account senza routing), si
-    // invia null per approvatore_* — il webhook non si blocca.
-    const richiedente = db.prepare('SELECT nome, ruolo FROM users WHERE id = ?').get(existing.user_id);
-    const approvatore = existing.venditore_id
-      ? db.prepare('SELECT nome, ruolo FROM users WHERE id = ?').get(existing.venditore_id)
-      : null;
-
-    sendWebhook({
-      id_richiesta: uuid,
-      numero_ordine: richiestaAggiornata.numero_ordine_esterno,
-      bda_hash: richiestaAggiornata.bda_hash,
-      venditore_codice: venditore?.codice_cliente_esterno || '',
-      prodotti: richiestaAggiornata.prodotti ? JSON.parse(richiestaAggiornata.prodotti) : [],
-      linee: richiestaAggiornata.linee ? JSON.parse(richiestaAggiornata.linee) : [],
-      corriere: richiestaAggiornata.corriere || null,
-      corriere_nome: richiestaAggiornata.corriere_nome || null,
-      pv_nome: richiestaAggiornata.pv_nome || null,
-      pv_indirizzo: richiestaAggiornata.pv_indirizzo || null,
-      pv_citta: richiestaAggiornata.pv_citta || null,
-      pv_cap: richiestaAggiornata.pv_cap || null,
-      pv_provincia: richiestaAggiornata.pv_provincia || null,
-      pv_regione: richiestaAggiornata.pv_regione || null,
-      num_reso: richiestaAggiornata.num_reso ?? null,
-      motivo_reso: richiestaAggiornata.motivo_reso,
-      note: richiestaAggiornata.note,
-      data_approvazione: dataApprovazione,
-      // Campi per export corriere (RITGIO*.xls) — modello vecchio (backward compat)
-      cldm: richiestaAggiornata.cldm || null,
-      ddt_numero: richiestaAggiornata.ddt_numero || null,
-      ddt_data: richiestaAggiornata.ddt_data || null,
-      num_colli: richiestaAggiornata.num_colli ?? null,
-      bda_autorizzazione: richiestaAggiornata.bda_autorizzazione || null,
-      richiedente_nome: richiedente?.nome ?? null,
-      richiedente_ruolo: richiedente?.ruolo ?? null,
-      approvatore_nome: approvatore?.nome ?? null,
-      approvatore_ruolo: approvatore?.ruolo ?? null,
-    }).catch((err) => logger.error(`Webhook fallito per ${uuid}: ${err.message}`));
-
-    // Email di autorizzazione al reso (testo + PDF) alle destinatarie fisse.
-    // Fire-and-forget (DOPO res.json gia' partita sopra): non blocca la risposta
-    // HTTP. SMTP copiato da ABC HUB (server/lib/resi-email.js). Se SMTP non
-    // configurato o env RESI_AUTORIZZAZIONE_EMAIL_ON=0 → skip silente.
-    // Usa la riga completa appena aggiornata (richiestaAggiornata) cosi' i
-    // campi pv_*/ddt_*/linee/motivo sono quelli correnti.
-    sendResoAutorizzazioneEmail(richiestaAggiornata).catch((err) =>
-      logger.error(`Email autorizzazione fallita per ${uuid}: ${err.message}`)
-    );
+    notificaApprovazioneReso(existing);
   }
 
   res.json({ success: true, stato });

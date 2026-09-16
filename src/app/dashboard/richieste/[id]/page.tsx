@@ -19,6 +19,8 @@ interface RichiestaDetail {
   linee?: string | object[];
   stato: string;
   note_venditore: string | null;
+  // 2026-09-16 P1: motivazione manuale (solo quando motivo_reso = 'altro')
+  motivo_altro?: string | null;
   data_approvazione: string | null;
   created_at: string;
   venditore_nome?: string | null;
@@ -131,6 +133,11 @@ export default function RichiestaDetailPage() {
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Motivo</p>
               <p className="text-sm font-medium text-gray-100 capitalize">{richiesta.motivo_reso.replace('_', ' ')}</p>
+              {richiesta.motivo_altro && (
+                <p className="text-sm text-gray-300 mt-1">
+                  <span className="text-gray-400">Altro: </span>{richiesta.motivo_altro}
+                </p>
+              )}
             </div>
             {richiesta.venditore_nome && (
               <div>
@@ -258,12 +265,12 @@ export default function RichiestaDetailPage() {
                   <dd className="text-gray-100 font-medium text-right">{richiesta.ddt_data}</dd>
                 </div>
               )}
-              {richiesta.num_colli != null && (
-                <div className="flex justify-between gap-4">
-                  <dt className="text-gray-500">Num. colli</dt>
-                  <dd className="text-gray-100 font-medium text-right">{richiesta.num_colli}</dd>
-                </div>
-              )}
+              {/* 2026-09-16 P6: riga sempre presente (fallback '—' per resi
+                  pre-default senza colli). */}
+              <div className="flex justify-between gap-4">
+                <dt className="text-gray-500">Num. colli</dt>
+                <dd className="text-gray-100 font-medium text-right">{richiesta.num_colli ?? '—'}</dd>
+              </div>
             </dl>
           </div>
         )}

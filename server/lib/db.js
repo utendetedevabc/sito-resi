@@ -91,6 +91,9 @@ addColumnIfMissing('richieste_reso', 'pv_cap', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_provincia', 'TEXT');
 addColumnIfMissing('richieste_reso', 'pv_regione', 'TEXT');
 addColumnIfMissing('richieste_reso', 'num_reso', 'INTEGER');      // identificativo sequenziale 1..1.000.000
+// 2026-09-16 (richiesta operatori): motivazione manuale obbligatoria quando
+// motivo_reso = 'altro' ("Altro" nel form).
+addColumnIfMissing('richieste_reso', 'motivo_altro', 'TEXT');
 // Task 4 (CS avanzata): data_spedizione impostata dal POST /richieste/export
 // quando l'interno esporta i resi approvati (XLS multi-riga + mark spedito).
 // NULL finche' il reso e' "approvato"; valorizzato allo switch in "spedito".

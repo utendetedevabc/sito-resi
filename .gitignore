@@ -9,6 +9,9 @@ pnpm-lock.yaml
 out/
 dist/
 build/
+# Service worker generato da next-pwa a ogni build
+public/sw.js
+public/workbox-*.js
 
 # Environment
 .env
@@ -26,6 +29,9 @@ data/*.corrupt
 # Backup manuale/automatici (dati personali in chiaro: MAI nel repo)
 data/*.bak*
 data/backups/
+
+# Export corriere su disco (opzionale, GLS_EXPORT_DIR=./data/exports)
+data/exports/
 
 # Logs
 *.log

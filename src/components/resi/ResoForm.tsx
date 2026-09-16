@@ -8,7 +8,10 @@ import { useToast } from '@/components/ui/Toast';
 
 interface Linea {
   nome: string;
-  numero_pezzi: number;
+  // '' = campo vuoto (default): i pezzi sono obbligatori, nessun fallback
+  // silente a 1 (richiesta operatori 2026-09-16 — prima un valore mancante
+  // diventava 1 senza che l'utente se ne accorgesse).
+  numero_pezzi: number | '';
 }
 
 interface Props {
@@ -32,8 +35,10 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
   const router = useRouter();
   const { addToast } = useToast();
   const [motivo, setMotivo] = useState('');
+  // 2026-09-16 P1: motivazione manuale obbligatoria quando motivo = 'altro'.
+  const [motivoAltro, setMotivoAltro] = useState('');
   const [note, setNote] = useState('');
-  const [linee, setLinee] = useState<Linea[]>([{ nome: '', numero_pezzi: 1 }]);
+  const [linee, setLinee] = useState<Linea[]>([{ nome: '', numero_pezzi: '' }]);
   const [corriere, setCorriere] = useState('');
   const [corriereNome, setCorriereNome] = useState('');
   const [cldm, setCldm] = useState('');
@@ -51,11 +56,13 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
   const [lineePv, setLineePv] = useState<string[]>([]);
   const [ddtNumero, setDdtNumero] = useState('');
   const [ddtData, setDdtData] = useState('');
-  const [numColli, setNumColli] = useState('');
+  // 2026-09-16 P5: default 1 (il campo resta modificabile).
+  const [numColli, setNumColli] = useState('1');
   const [foto, setFoto] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const corriereNomeRef = useRef<HTMLInputElement>(null);
+  const motivoAltroRef = useRef<HTMLInputElement>(null);
   // Ref al cldm corrente per gestire le race tra fetchPv (lookup on blur) e
   // la search debounced: dopo await, verifichiamo che il code richiesto sia
   // ancora quello attivo prima di applicare i setState (evita stale closure
@@ -130,13 +137,19 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       const body: Record<string, unknown> = {
         cldm,
         motivo_reso: motivo,
+        // 2026-09-16 P1: motivazione manuale, inviata solo per motivo 'altro'
+        // (la validazione native `required` + il refine server la garantiscono).
+        motivo_altro: motivo === 'altro' ? motivoAltro.trim() : undefined,
         note: note || undefined,
-        linee,
+        // numero_pezzi '' non arriva mai qui (required native sul input), ma
+        // Number('') sarebbe 0 → 400 server. Cast difensivo idempotente.
+        linee: linee.map((l) => ({ nome: l.nome, numero_pezzi: Number(l.numero_pezzi) })),
         corriere,
         corriere_nome: corriere === 'ALTRI' ? corriereNome : null,
         ddt_numero: ddtNumero || null,
         ddt_data: ddtData || null,
-        num_colli: numColli ? Number(numColli) : null,
+        // 2026-09-16 P5: colli default 1 (mai null dal form).
+        num_colli: numColli ? Number(numColli) : 1,
       };
       // Invia i pv_* solo nel fallback manuale; se il lookup è OK il server
       // deriva i pv_* dal cldm (ignora eventuali pv_* del body).
@@ -187,6 +200,30 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
     } else {
       setCorriereNome('');
     }
+  }
+
+  // 2026-09-16 P1: stessa logica di onCorriereChange per il motivo 'altro' —
+  // il campo motivazione si rivela e riceve il focus; deselezionando 'altro'
+  // il testo digitato viene ripulisto.
+  function onMotivoChange(val: string) {
+    setMotivo(val);
+    if (val === 'altro') {
+      setTimeout(() => motivoAltroRef.current?.focus(), 0);
+    } else {
+      setMotivoAltro('');
+    }
+  }
+
+  // 2026-09-16 P5: auto-slash per la data DDT. Lo smartphone mostra la tastiera
+  // numerica (inputMode="numeric") senza '/': mentre si digitano le cifre
+  // vengono inseriti automaticamente i separatori (GG/MM/AAAA). La regex di
+  // validazione del pattern resta invariata e combacia sull'output.
+  function onDdtDataChange(val: string) {
+    const digits = val.replace(/\D/g, '').slice(0, 8);
+    let out = digits;
+    if (digits.length > 2) out = `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    if (digits.length > 4) out = `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+    setDdtData(out);
   }
 
   // Lookup del PV a partire dal codice CLDM. Chiamato on blur e quando
@@ -472,7 +509,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
           id="motivo"
           required
           value={motivo}
-          onChange={(e) => setMotivo(e.target.value)}
+          onChange={(e) => onMotivoChange(e.target.value)}
           className="input-mobile"
         >
           <option value="" disabled>Seleziona motivo...</option>
@@ -481,6 +518,37 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
           <option value="non_conforme">Non conforme alla descrizione</option>
           <option value="altro">Altro</option>
         </select>
+      </div>
+
+      {/* 2026-09-16 P1: motivazione manuale — solo se motivo = 'altro'.
+          Stesso pattern del campo nome corriere (ALTRI): input condizionale
+          obbligatorio con focus automatico al reveal + live region. */}
+      {motivo === 'altro' && (
+        <div>
+          <label htmlFor="motivo_altro" className="block text-sm font-medium text-gray-300 mb-1.5">
+            Motivazione *
+          </label>
+          <input
+            id="motivo_altro"
+            type="text"
+            required
+            value={motivoAltro}
+            onChange={(e) => setMotivoAltro(e.target.value)}
+            className="input-mobile"
+            placeholder="Es. Prodotto scaduto durante trasporto"
+            maxLength={500}
+            minLength={3}
+            autoComplete="off"
+            aria-describedby="motivo_altro-hint"
+            ref={motivoAltroRef}
+          />
+          <p id="motivo_altro-hint" className="text-xs text-gray-500 mt-1">
+            Descrivi il motivo del reso (obbligatorio).
+          </p>
+        </div>
+      )}
+      <div role="status" aria-live="polite" className="sr-only">
+        {motivo === 'altro' ? 'Inserisci la motivazione del reso.' : ''}
       </div>
 
       <LineeForm value={linee} onChange={setLinee} lineeDisponibili={lineePv} />
@@ -581,7 +649,7 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
               type="text"
               inputMode="numeric"
               value={ddtData}
-              onChange={(e) => setDdtData(e.target.value)}
+              onChange={(e) => onDdtDataChange(e.target.value)}
               className="input-mobile"
               placeholder="GG/MM/AAAA"
               pattern="(0[1-9]|[12]\d|3[01])/(0[1-9]|1[0-2])/\d{4}"

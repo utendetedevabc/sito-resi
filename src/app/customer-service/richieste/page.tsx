@@ -5,14 +5,18 @@ import Link from 'next/link';
 import MobileHeader from '@/components/layout/MobileHeader';
 import { ListaSkeleton } from '@/components/ui/SkeletonLoader';
 import EmptyState from '@/components/ui/EmptyState';
+import Pagination from '@/components/ui/Pagination';
+import ConfirmSheet from '@/components/ui/ConfirmSheet';
 import { useToast } from '@/components/ui/Toast';
-import { CheckCircleIcon, XCircleIcon, ChevronDownIcon, ChevronUpIcon, ArrowRightIcon, DocumentArrowDownIcon, PaperAirplaneIcon } from '@heroicons/react/24/outline';
+import { CheckCircleIcon, XCircleIcon, ChevronDownIcon, ChevronUpIcon, ArrowRightIcon, DocumentArrowDownIcon, PaperAirplaneIcon, PrinterIcon } from '@heroicons/react/24/outline';
 
 interface Richiesta {
   id: number;
   uuid: string;
   numero_ordine_esterno: string;
   motivo_reso: string;
+  // 2026-09-16 P1: motivazione manuale (solo quando motivo_reso = 'altro')
+  motivo_altro?: string | null;
   stato: string;
   note: string | null;
   note_venditore: string | null;
@@ -57,6 +61,12 @@ export default function CSRRichiestePage() {
   const [vista, setVista] = useState<Vista>('da_approvare');
   const [downloadingUuid, setDownloadingUuid] = useState<string | null>(null);
 
+  // Paginazione (2026-09-16 P3): il server pagina (per_page=20) ma prima la UI
+  // non la gestiva — i resi oltre la prima pagina erano invisibili.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const PER_PAGE = 20;
+
   // Ricerca
   const [sCldm, setSCldm] = useState('');
   const [sNumReso, setSNumReso] = useState('');
@@ -64,9 +74,17 @@ export default function CSRRichiestePage() {
   const [sDataA, setSDataA] = useState('');
   const [applied, setApplied] = useState<SearchParams | null>(null);
 
-  // Selezione + export (tab Approvati)
+  // Selezione + azioni massive (tutte le tab, 2026-09-16 P4):
+  // da_approvare → approva/rifiuta batch; approvati → export; inviati → ristampa.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  // Nota condivisa opzionale per l'azione massiva su "Da gestire".
+  const [notaBatch, setNotaBatch] = useState('');
+  // Conferma batch: {tipo} apre il ConfirmSheet (il batch approvato spara
+  // N webhook + N email — conferma esplicita come per l'export singolo).
+  const [batchConfirm, setBatchConfirm] = useState<{ tipo: 'approvato' | 'rifiutato' } | null>(null);
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [ristampando, setRistampando] = useState(false);
 
   // Live region persistente
   const [msg, setMsg] = useState('');
@@ -74,9 +92,11 @@ export default function CSRRichiestePage() {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
-  function buildQuery(v: Vista, s: SearchParams | null) {
+  function buildQuery(v: Vista, s: SearchParams | null, p: number) {
     const params = new URLSearchParams();
     params.set('view', v);
+    params.set('page', String(p));
+    params.set('per_page', String(PER_PAGE));
     if (s) {
       if (s.cldm.trim()) params.set('cldm', s.cldm.trim());
       if (s.num_reso.trim()) params.set('num_reso', s.num_reso.trim());
@@ -86,19 +106,22 @@ export default function CSRRichiestePage() {
     return params.toString();
   }
 
-  const fetchData = useCallback(async (v: Vista, s: SearchParams | null) => {
+  const fetchData = useCallback(async (v: Vista, s: SearchParams | null, p: number) => {
     setLoading(true);
     setError('');
     setMsg('Ricerca in corso…');
     try {
       const token = localStorage.getItem('access_token');
-      const res = await fetch(`/api/customer-service/richieste?${buildQuery(v, s)}`, {
+      const res = await fetch(`/api/customer-service/richieste?${buildQuery(v, s, p)}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('Errore caricamento');
       const json = await res.json();
       setData(json.data || []);
-      setMsg((json.data?.length || 0) > 0 ? `${json.data.length} risultati trovati` : 'Nessun risultato');
+      setTotal(json.total || 0);
+      setMsg((json.data?.length || 0) > 0
+        ? `${json.total} risultati trovati — pagina ${json.page} di ${Math.max(1, Math.ceil((json.total || 1) / (json.per_page || PER_PAGE)))}`
+        : 'Nessun risultato');
     } catch {
       setError('Impossibile caricare le richieste.');
       setMsg('');
@@ -111,17 +134,25 @@ export default function CSRRichiestePage() {
     setExpanded(null);
     setAzione(null);
     setSelected(new Set());
-    fetchData(vista, applied);
-  }, [fetchData, vista, applied]);
+    fetchData(vista, applied, page);
+  }, [fetchData, vista, applied, page]);
+
+  // Cambio pagina: azzera la selezione (i checkbox selezionati non sono piu'
+  // visibili) e annuncia la nuova pagina agli screen reader.
+  function onPageChange(p: number) {
+    setSelected(new Set());
+    setPage(p);
+  }
 
   // Select-all indeterminato: visivo per stato parziale (WCAG: l'attr indeterminate non
-  // si setta via React, serve ref + effetto).
+  // si setta via React, serve ref + effetto). Attivo in tutte le tab (selezione
+  // multipla ovunque, 2026-09-16 P4).
   useEffect(() => {
-    if (selectAllRef.current && vista === 'approvati') {
+    if (selectAllRef.current) {
       const n = selected.size;
       selectAllRef.current.indeterminate = n > 0 && n < data.length;
     }
-  }, [selected, data.length, vista]);
+  }, [selected, data.length]);
 
   // Navigazione tastiera tabs (WAI-ARIA APG): frecce sx/dx, Home/End, roving tabindex.
   function onTabKeyDown(e: React.KeyboardEvent, idx: number) {
@@ -135,11 +166,13 @@ export default function CSRRichiestePage() {
     e.preventDefault();
     const target = TABS[next];
     setVista(target.v);
+    setPage(1);
     requestAnimationFrame(() => tabRefs.current[target.v]?.focus());
   }
 
   function onSearchSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setPage(1);
     setApplied({ cldm: sCldm, num_reso: sNumReso, data_da: sDataDa, data_a: sDataA });
   }
 
@@ -148,6 +181,7 @@ export default function CSRRichiestePage() {
     setSNumReso('');
     setSDataDa('');
     setSDataA('');
+    setPage(1);
     setApplied(null);
   }
 
@@ -227,7 +261,7 @@ export default function CSRRichiestePage() {
       setMsg(`Esportati ${selected.size} resi. Ora si trovano in "Inviati".`);
       setSelected(new Set());
       // Ricarica: i resi esportati lasciano "Approvati" (ora spediti).
-      await fetchData(vista, applied);
+      await fetchData(vista, applied, page);
       // Focus management: la barra export (e i suoi checkbox) potrebbero scomparire
       // dopo il refresh (resi→spediti, lista vuota). Sposta il focus sul tab
       // "Approvati" (sempre presente) per evitare focus nel vuoto (WCAG 2.4.3).
@@ -238,6 +272,81 @@ export default function CSRRichiestePage() {
       setMsg(`Esportazione fallita: ${m}`);
     } finally {
       setExporting(false);
+    }
+  }
+
+  // Azione massiva sulla tab "Da gestire" (2026-09-16 P4): POST /richieste/
+  // azione-batch con i selezionati + nota condivisa opzionale. Idempotente
+  // lato server (solo resi in_revisione).
+  async function onBatchAzione(tipo: 'approvato' | 'rifiutato') {
+    if (selected.size === 0) return;
+    setBatchConfirm(null);
+    setBatchSaving(true);
+    setMsg(`${tipo === 'approvato' ? 'Approvazione' : 'Rifiuto'} di ${selected.size} resi in corso…`);
+    try {
+      const token = localStorage.getItem('access_token');
+      const res = await fetch(`/api/customer-service/richieste/azione-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ uuids: Array.from(selected), stato: tipo, note: notaBatch.trim() || undefined }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'Errore azione massiva');
+      const n = j.aggiornati ?? selected.size;
+      addToast('success', tipo === 'approvato' ? `${n} resi approvati — ora in "Approvati"` : `${n} resi rifiutati`);
+      setMsg(`${n} resi ${tipo === 'approvato' ? 'approvati' : 'rifiutati'}.`);
+      setSelected(new Set());
+      setNotaBatch('');
+      await fetchData('da_approvare', applied, page);
+      // Focus management: la barra azioni (checkbox + textarea) puo' scomparire
+      // dopo il refresh (lista svuotata). Focus sul tab sempre presente (WCAG 2.4.3).
+      requestAnimationFrame(() => tabRefs.current['da_approvare']?.focus());
+    } catch (err: unknown) {
+      const m = (err as Error).message || 'Errore azione massiva';
+      addToast('error', m);
+      setMsg(`Azione fallita: ${m}`);
+    } finally {
+      setBatchSaving(false);
+    }
+  }
+
+  // Ristampa report XLS multi-riga dei selezionati nella tab "Inviati"
+  // (2026-09-16 P4): POST /richieste/ristampa-xls. Nessun cambio di stato.
+  async function onRistampa() {
+    if (selected.size === 0) return;
+    setRistampando(true);
+    setMsg(`Generazione report XLS di ${selected.size} resi in corso…`);
+    try {
+      const token = localStorage.getItem('access_token');
+      const res = await fetch(`/api/customer-service/richieste/ristampa-xls`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ uuids: Array.from(selected) }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || 'Errore ristampa');
+      }
+      const disp = res.headers.get('Content-Disposition') || '';
+      const m = disp.match(/filename="?([^"]+)"?/i);
+      const filename = m ? m[1] : `RITGIO_ristampa.xls`;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      addToast('success', `Report ${filename} scaricato`);
+      setMsg(`Report XLS di ${selected.size} resi scaricato.`);
+    } catch (err: unknown) {
+      const m = (err as Error).message || 'Errore ristampa XLS';
+      addToast('error', m);
+      setMsg(`Ristampa fallita: ${m}`);
+    } finally {
+      setRistampando(false);
     }
   }
 
@@ -257,8 +366,8 @@ export default function CSRRichiestePage() {
       if (!res.ok) throw new Error('Errore');
       addToast('success', tipo === 'approvato' ? 'Richiesta approvata — ora in "Approvati"' : 'Richiesta rifiutata');
       setAzione(null);
-      if (tipo === 'approvato') setVista('approvati');
-      else fetchData('da_approvare', applied);
+      if (tipo === 'approvato') { setVista('approvati'); setPage(1); }
+      else fetchData('da_approvare', applied, page);
     } catch {
       addToast('error', 'Errore durante l\'operazione');
     } finally {
@@ -288,7 +397,7 @@ export default function CSRRichiestePage() {
                 aria-selected={selected}
                 aria-controls={t.panelId}
                 tabIndex={selected ? 0 : -1}
-                onClick={() => setVista(t.v)}
+                onClick={() => { setVista(t.v); setPage(1); }}
                 onKeyDown={(e) => onTabKeyDown(e, idx)}
                 className={`flex-1 h-11 rounded-xl text-sm font-medium transition-colors ${selected ? 'bg-blue-600 text-white' : 'text-gray-300 active:bg-gray-700'}`}
               >
@@ -358,35 +467,101 @@ export default function CSRRichiestePage() {
             </div>
           )}
 
-          {/* Barra export: solo tab Approvati, se ci sono resi. */}
-          {vista === 'approvati' && !loading && data.length > 0 && (
-            <div className="mb-3 flex items-center gap-3 p-3 bg-gray-800 rounded-2xl border border-gray-700">
-              <label className="flex items-center gap-2 text-sm text-gray-300 min-h-[44px] cursor-pointer">
-                <input
-                  ref={selectAllRef}
-                  type="checkbox"
-                  className="w-5 h-5 accent-blue-600"
-                  checked={selected.size === data.length && data.length > 0}
-                  onChange={(e) => toggleAll(e.target.checked)}
-                  aria-label="Seleziona tutti i resi approvati"
-                />
-                <span>Seleziona tutti</span>
-              </label>
-              <button
-                type="button"
-                onClick={onExport}
-                disabled={selected.size === 0 || exporting}
-                aria-busy={exporting}
-                aria-label={`Esporta e invia ${selected.size} resi selezionati al corriere`}
-                className="ml-auto inline-flex items-center justify-center gap-2 h-11 px-4 bg-green-600 text-white font-medium rounded-xl active:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {exporting ? (
-                  <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
-                ) : (
-                  <PaperAirplaneIcon className="w-5 h-5" aria-hidden="true" />
+          {/* Barra azioni massive (2026-09-16 P4): selezione multipla in tutte
+              le tab. Select-all con aria-label contestuale per tab. */}
+          {!loading && data.length > 0 && (
+            <div className="mb-3 p-3 bg-gray-800 rounded-2xl border border-gray-700 space-y-3">
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-sm text-gray-300 min-h-[44px] cursor-pointer">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    className="w-5 h-5 accent-blue-600"
+                    checked={selected.size === data.length && data.length > 0}
+                    onChange={(e) => toggleAll(e.target.checked)}
+                    aria-label={`Seleziona tutti i ${vista === 'da_approvare' ? 'resi da gestire' : vista === 'approvati' ? 'resi approvati' : 'resi inviati'}`}
+                  />
+                  <span>Seleziona tutti</span>
+                </label>
+
+                {vista === 'da_approvare' && (
+                  <div className="ml-auto flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setBatchConfirm({ tipo: 'rifiutato' })}
+                      disabled={selected.size === 0 || batchSaving}
+                      aria-label={`Rifiuta ${selected.size} resi selezionati`}
+                      className="inline-flex items-center justify-center gap-1.5 h-11 px-3 bg-red-900/30 text-red-300 font-medium rounded-xl border border-red-800 active:bg-red-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <XCircleIcon className="w-5 h-5" aria-hidden="true" />
+                      Rifiuta ({selected.size})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBatchConfirm({ tipo: 'approvato' })}
+                      disabled={selected.size === 0 || batchSaving}
+                      aria-label={`Approva ${selected.size} resi selezionati`}
+                      className="inline-flex items-center justify-center gap-1.5 h-11 px-3 bg-green-600 text-white font-medium rounded-xl active:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <CheckCircleIcon className="w-5 h-5" aria-hidden="true" />
+                      Approva ({selected.size})
+                    </button>
+                  </div>
                 )}
-                Esporta e invia ({selected.size})
-              </button>
+
+                {vista === 'approvati' && (
+                  <button
+                    type="button"
+                    onClick={onExport}
+                    disabled={selected.size === 0 || exporting}
+                    aria-busy={exporting}
+                    aria-label={`Esporta e invia ${selected.size} resi selezionati al corriere`}
+                    className="ml-auto inline-flex items-center justify-center gap-2 h-11 px-4 bg-green-600 text-white font-medium rounded-xl active:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {exporting ? (
+                      <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" aria-hidden="true" />
+                    )}
+                    Esporta e invia ({selected.size})
+                  </button>
+                )}
+
+                {vista === 'inviati' && (
+                  <button
+                    type="button"
+                    onClick={onRistampa}
+                    disabled={selected.size === 0 || ristampando}
+                    aria-busy={ristampando}
+                    aria-label={`Ristampa report XLS di ${selected.size} resi selezionati`}
+                    className="ml-auto inline-flex items-center justify-center gap-2 h-11 px-4 bg-blue-600 text-white font-medium rounded-xl active:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {ristampando ? (
+                      <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+                    ) : (
+                      <PrinterIcon className="w-5 h-5" aria-hidden="true" />
+                    )}
+                    Ristampa report XLS ({selected.size})
+                  </button>
+                )}
+              </div>
+
+              {/* Nota condivisa opzionale per l'azione massiva (solo "Da gestire"). */}
+              {vista === 'da_approvare' && (
+                <div>
+                  <label htmlFor="nota-batch" className="block text-xs font-medium text-gray-400 mb-1">
+                    Nota (opzionale per tutti i selezionati)
+                  </label>
+                  <textarea
+                    id="nota-batch"
+                    value={notaBatch}
+                    onChange={(e) => setNotaBatch(e.target.value)}
+                    className="input-mobile min-h-[60px] resize-y"
+                    placeholder="Note opzionali applicate a tutti i resi selezionati..."
+                    maxLength={2000}
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -411,19 +586,17 @@ export default function CSRRichiestePage() {
                 return (
                 <div key={r.uuid} className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden">
                   <div className="flex items-stretch">
-                    {/* Checkbox (solo tab Approvati): elemento separato dall'accordion
-                        header (click non espande la riga). */}
-                    {vista === 'approvati' && (
-                      <div className="flex items-center justify-center min-w-[44px] min-h-[44px] pl-3">
-                        <input
-                          type="checkbox"
-                          className="w-5 h-5 accent-blue-600"
-                          checked={isSelected}
-                          onChange={(e) => toggleOne(r.uuid, e.target.checked)}
-                          aria-label={`Seleziona reso n. ${r.num_reso ?? r.numero_ordine_esterno}`}
-                        />
-                      </div>
-                    )}
+                    {/* Checkbox (tutte le tab, 2026-09-16 P4): elemento separato
+                        dall'accordion header (click non espande la riga). */}
+                    <div className="flex items-center justify-center min-w-[44px] min-h-[44px] pl-3">
+                      <input
+                        type="checkbox"
+                        className="w-5 h-5 accent-blue-600"
+                        checked={isSelected}
+                        onChange={(e) => toggleOne(r.uuid, e.target.checked)}
+                        aria-label={`Seleziona reso n. ${r.num_reso ?? r.numero_ordine_esterno}`}
+                      />
+                    </div>
                     {/* Header espandibile: <button> reale (focusabile, aria-expanded/aria-controls). */}
                     <button
                       type="button"
@@ -461,6 +634,7 @@ export default function CSRRichiestePage() {
                     <div id={panelId} className="px-4 pb-4 border-t border-gray-700">
                       <div className="py-3 space-y-2 text-sm text-gray-300">
                         <p><span className="text-gray-500">Motivo:</span> {r.motivo_reso.replace('_', ' ')}</p>
+                        {r.motivo_altro && <p><span className="text-gray-500">Altro:</span> {r.motivo_altro}</p>}
                         <p><span className="text-gray-500">Venditore:</span> {r.venditore_nome || '—'}</p>
                         {r.note && <p><span className="text-gray-500">Note:</span> {r.note}</p>}
                         {r.note_venditore && <p><span className="text-gray-500">Note venditore:</span> {r.note_venditore}</p>}
@@ -548,8 +722,32 @@ export default function CSRRichiestePage() {
               })}
             </div>
           )}
+
+          {/* Paginazione (2026-09-16 P3): visibile solo se c'e' piu' di una
+              pagina. Etichetta contestuale per tab nel nav aria-label. */}
+          {!loading && total > PER_PAGE && (
+            <Pagination
+              page={page}
+              total={total}
+              perPage={PER_PAGE}
+              label={vista === 'da_approvare' ? 'resi da gestire' : vista === 'approvati' ? 'resi approvati' : 'resi inviati'}
+              onPageChange={onPageChange}
+            />
+          )}
         </div>
       </div>
+
+      {/* Conferma azione massiva (2026-09-16 P4): il batch approvato spara N
+          webhook + N email — conferma esplicita come per l'export. */}
+      <ConfirmSheet
+        open={batchConfirm !== null}
+        title={batchConfirm?.tipo === 'approvato' ? 'Approvazione massiva' : 'Rifiuto massivo'}
+        message={`Confermi l'operazione su ${selected.size} resi selezionati?${batchConfirm?.tipo === 'approvato' ? ' Per ogni reso partiranno l\'invio ad ABC HUB e l\'email di autorizzazione.' : ''}${notaBatch.trim() ? ' La nota verrà applicata a tutti.' : ''}`}
+        confirmText={batchConfirm?.tipo === 'approvato' ? `Approva ${selected.size} resi` : `Rifiuta ${selected.size} resi`}
+        variant={batchConfirm?.tipo === 'approvato' ? 'primary' : 'danger'}
+        onConfirm={() => batchConfirm && onBatchAzione(batchConfirm.tipo)}
+        onCancel={() => setBatchConfirm(null)}
+      />
     </div>
   );
 }

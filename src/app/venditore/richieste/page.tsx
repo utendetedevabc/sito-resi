@@ -5,6 +5,7 @@ import Link from 'next/link';
 import MobileHeader from '@/components/layout/MobileHeader';
 import { ListaSkeleton } from '@/components/ui/SkeletonLoader';
 import EmptyState from '@/components/ui/EmptyState';
+import Pagination from '@/components/ui/Pagination';
 import { useToast } from '@/components/ui/Toast';
 import { CheckCircleIcon, XCircleIcon, ChevronDownIcon, ChevronUpIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 
@@ -29,17 +30,26 @@ export default function VenditoreRichiestePage() {
   const [azione, setAzione] = useState<{ uuid: string; tipo: 'approvato' | 'rifiutato'; note: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const fetchData = useCallback(async () => {
+  // Paginazione (2026-09-16 P3): il server pagina (per_page=20) ma la UI non
+  // la gestiva — le richieste oltre la prima pagina erano invisibili.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const PER_PAGE = 20;
+  // Live region persistente (annuncio cambio pagina a screen reader).
+  const [msg, setMsg] = useState('');
+
+  const fetchData = useCallback(async (p: number) => {
     setLoading(true);
     setError('');
     try {
       const token = localStorage.getItem('access_token');
-      const res = await fetch('/api/venditore/richieste', {
+      const res = await fetch(`/api/venditore/richieste?page=${p}&per_page=${PER_PAGE}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('Errore caricamento');
       const json = await res.json();
       setData(json.data || []);
+      setTotal(json.total || 0);
     } catch {
       setError('Impossibile caricare le richieste.');
     } finally {
@@ -48,8 +58,15 @@ export default function VenditoreRichiestePage() {
   }, []);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    fetchData(page);
+  }, [fetchData, page]);
+
+  function onPageChange(p: number) {
+    setExpanded(null);
+    setAzione(null);
+    setMsg(`Pagina ${p} di ${Math.max(1, Math.ceil(total / PER_PAGE))}`);
+    setPage(p);
+  }
 
   async function handleAzione(uuid: string, tipo: 'approvato' | 'rifiutato') {
     if (!azione || azione.uuid !== uuid) {
@@ -68,7 +85,7 @@ export default function VenditoreRichiestePage() {
       if (!res.ok) throw new Error('Errore');
       addToast('success', tipo === 'approvato' ? 'Richiesta approvata (in revisione)' : 'Richiesta rifiutata');
       setAzione(null);
-      fetchData();
+      fetchData(page);
     } catch {
       addToast('error', 'Errore durante l\'operazione');
     } finally {
@@ -81,6 +98,9 @@ export default function VenditoreRichiestePage() {
       <MobileHeader title="Richieste da approvare" />
 
       <div className="pt-4">
+        {/* Live region persistente (sempre in DOM, contenuto via stato). */}
+        <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{msg}</div>
+
         {error && (
           <div role="alert" className="mb-4 p-3 bg-red-900/30 text-red-300 rounded-xl border border-red-800 text-sm">
             {error}
@@ -188,6 +208,17 @@ export default function VenditoreRichiestePage() {
               );
             })}
           </div>
+        )}
+
+        {/* Paginazione (2026-09-16 P3): visibile solo se c'e' piu' di una pagina. */}
+        {!loading && total > PER_PAGE && (
+          <Pagination
+            page={page}
+            total={total}
+            perPage={PER_PAGE}
+            label="richieste da approvare"
+            onPageChange={onPageChange}
+          />
         )}
       </div>
     </div>

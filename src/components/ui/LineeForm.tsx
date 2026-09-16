@@ -5,7 +5,9 @@ import { PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 
 interface Linea {
   nome: string;
-  numero_pezzi: number;
+  // '' = campo vuoto: i pezzi sono obbligatori (required native + validazione
+  // server min(1)); nessun fallback silente a 1 (richiesta operatori 2026-09-16).
+  numero_pezzi: number | '';
 }
 
 // Valore sentinella per l'opzione "Altro…" della <select>.
@@ -65,7 +67,7 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
   }, [lineeKey]); // dipende solo dalla key di contenuto, NON da value
 
   function add() {
-    onChange([...value, { nome: '', numero_pezzi: 1 }]);
+    onChange([...value, { nome: '', numero_pezzi: '' }]);
     // La nuova riga parte in modalità "linea da selezionare" (non Altro).
     setAltre((prev) => [...prev, false]);
     // Focus sul primo campo (select o input) della nuova riga.
@@ -92,7 +94,7 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
     onChange(next);
   }
 
-  function updatePezzi(index: number, val: number) {
+  function updatePezzi(index: number, val: number | '') {
     const next = [...value];
     next[index] = { ...next[index], numero_pezzi: val };
     onChange(next);
@@ -237,7 +239,10 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
                   max={9999}
                   required
                   value={l.numero_pezzi}
-                  onChange={(e) => updatePezzi(i, parseInt(e.target.value, 10) || 1)}
+                  // 2026-09-16 P5: nessun fallback silente a 1 — il campo vuoto
+                  // resta vuoto, è obbligatorio (required native: il browser
+                  // blocca l'invio e porta il focus sul primo input invalido).
+                  onChange={(e) => updatePezzi(i, e.target.value === '' ? '' : parseInt(e.target.value, 10) || '')}
                   className="input-mobile"
                   aria-describedby={`l-pezzi-hint-${i}`}
                 />

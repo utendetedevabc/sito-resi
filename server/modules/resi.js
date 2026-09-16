@@ -61,7 +61,7 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
   }
 
-  const { numero_ordine, bda, motivo_reso, note, prodotti,
+  const { numero_ordine, bda, motivo_reso, motivo_altro, note, prodotti,
           cldm, ddt_numero, ddt_data, num_colli,
           linee, corriere, corriere_nome,
           pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione } = parsed.data;
@@ -145,10 +145,10 @@ router.post('/', (req, res) => {
   try {
     const stmt = db.prepare(
       `INSERT INTO richieste_reso
-       (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, note, prodotti, data_scadenza, stato, data_approvazione,
+       (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, motivo_altro, note, prodotti, data_scadenza, stato, data_approvazione,
         cldm, ddt_numero, ddt_data, num_colli, bda_autorizzazione,
         linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, resp_codice, resp_nome, num_reso)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const info = stmt.run(
       uuid,
@@ -158,6 +158,7 @@ router.post('/', (req, res) => {
       numero_ordine || '',
       bdaHash,
       motivo_reso,
+      motivo_altro || null,
       note || null,
       // prodotte: nel nuovo modello (linee) non si inviano prodotti. Si store '[]'
       // (array vuoto) invece di null perche' alcuni DB esistenti hanno ancora la
@@ -222,6 +223,7 @@ router.post('/', (req, res) => {
             pv_regione: row.pv_regione || null,
             num_reso: row.num_reso ?? null,
             motivo_reso: row.motivo_reso,
+            motivo_altro: row.motivo_altro || null,
             note: row.note,
             data_approvazione: new Date().toISOString(),
             cldm: row.cldm || null,
@@ -235,7 +237,7 @@ router.post('/', (req, res) => {
             approvatore_ruolo: csRuolo,
           }).catch((err) => logger.error(`Webhook fallito per ${uuid} (CS auto-chiuso): ${err.message}`));
 
-          // Email di autorizzazione (testo + PDF) — stesso trigger del CS PUT
+          // Email di autorizzazione (testo + HTML) — stesso trigger del CS PUT
           // 2° livello. Fire-and-forget. Usa la riga completa appena creata.
           sendResoAutorizzazioneEmail(row).catch((err) =>
             logger.error(`Email autorizzazione fallita per ${uuid} (CS auto-chiuso): ${err.message}`)
@@ -296,7 +298,7 @@ router.put('/:uuid', (req, res) => {
     return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
   }
 
-  const { numero_ordine, bda, motivo_reso, note, prodotti,
+  const { numero_ordine, bda, motivo_reso, motivo_altro, note, prodotti,
           cldm, ddt_numero, ddt_data, num_colli,
           linee, corriere, corriere_nome,
           pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione } = parsed.data;
@@ -334,7 +336,7 @@ router.put('/:uuid', (req, res) => {
   try {
     db.prepare(
       `UPDATE richieste_reso SET
-       numero_ordine_esterno = ?, bda_hash = ?, motivo_reso = ?, note = ?, prodotti = ?, updated_at = datetime('now'),
+       numero_ordine_esterno = ?, bda_hash = ?, motivo_reso = ?, motivo_altro = ?, note = ?, prodotti = ?, updated_at = datetime('now'),
        cldm = ?, ddt_numero = ?, ddt_data = ?, num_colli = ?, bda_autorizzazione = ?,
        linee = ?, corriere = ?, corriere_nome = ?,
        pv_nome = ?, pv_indirizzo = ?, pv_citta = ?, pv_cap = ?, pv_provincia = ?, pv_regione = ?,
@@ -345,6 +347,7 @@ router.put('/:uuid', (req, res) => {
       numero_ordine || '',
       bdaHash,
       motivo_reso,
+      motivo_altro || null,
       note || null,
       prodotti ? JSON.stringify(prodotti) : '[]',
       cldm || null,

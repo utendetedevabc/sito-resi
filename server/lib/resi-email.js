@@ -1,18 +1,17 @@
-// server/lib/resi-email.js — Email di autorizzazione al reso (testo + PDF)
+// server/lib/resi-email.js — Email di autorizzazione al reso (testo + HTML)
 //
 // Sistema SMTP copiato da ABC HUB (src/modules/email-sender.js): transporter
 // nodemailer pooled con verify/cache, testMode che redirige tutto a un indirizzo
 // di test, env lette dinamicamente cosi' resetTransporter() rilegge la config.
-// Qui in piu' c'e' la generazione del PDF (pdfkit) e il template italiano della
-// "Autorizzazione al reso" (spec 2026-09-09-gestione-resi-cs-avanzata-design.md,
-// riga Sup/Aut rimossa per scelta utente).
+// Template italiano della "Autorizzazione al reso" (spec 2026-09-09, riga
+// Sup/Aut rimossa per scelta utente). Il PDF allegato e' stato rimosso su
+// richiesta degli operatori (2026-09-16): l'email e' solo testo + HTML.
 //
 // L'email parte dal sito-resi (NON da ABC HUB): il trigger e' nel codice che
 // approva il reso (customer-service.js PUT 2° livello + resi.js auto-chiuso CS).
 // Fire-and-forget: non deve bloccare la risposta HTTP.
 
 import nodemailer from 'nodemailer';
-import PDFDocument from 'pdfkit';
 import logger from './logger.js';
 
 // --- Config SMTP (letta dinamicamente, come in ABC HUB) ---
@@ -146,10 +145,12 @@ function fraseLinee(linee) {
   return 'dei prodotti';
 }
 
-function fraseMotivo(motivoReso, note) {
+function fraseMotivo(motivoReso, note, motivoAltro) {
   const label = MOTIVO_RESO_LABEL[motivoReso] || (motivoReso ? String(motivoReso) : '—');
-  const n = note ? String(note).trim() : '';
-  return n ? `${label} - ${n}` : label;
+  // Per motivo 'altro' la motivazione manuale e' la parte piu' utile; le note
+  // eventuali la seguono separata da ';'.
+  const bits = [motivoAltro, note].map((s) => (s ? String(s).trim() : '')).filter(Boolean);
+  return bits.length ? `${label} - ${bits.join('; ')}` : label;
 }
 
 // Escape HTML per i valori interpolati nel template (pv_*, note, linee...).
@@ -189,7 +190,9 @@ export function buildResoAutorizzazioneHtml(richiesta) {
 
   const motivoLabel = MOTIVO_RESO_LABEL[richiesta.motivo_reso] || (richiesta.motivo_reso ? String(richiesta.motivo_reso) : '—');
   const note = richiesta.note ? String(richiesta.note).trim() : '';
-  const motivoVal = note ? `${esc(motivoLabel)} — ${esc(note)}` : esc(motivoLabel);
+  const motivoAltro = richiesta.motivo_altro ? String(richiesta.motivo_altro).trim() : '';
+  const motivoBits = [motivoAltro, note].filter(Boolean).map(esc);
+  const motivoVal = motivoBits.length ? `${esc(motivoLabel)} — ${motivoBits.join(' — ')}` : esc(motivoLabel);
 
   // Banner giallo in testMode, identico a quello di ABC HUB.
   const recipients = getRecipients().join(', ');
@@ -247,7 +250,7 @@ export function buildResoAutorizzazioneHtml(richiesta) {
   </p>
 </div>`;
 }
-// --- Costruzione testo (corpo unico, usato sia per text/plain sia per PDF) ---
+// --- Costruzione testo (corpo unico per il text/plain dell'email) ---
 export function buildResoAutorizzazioneText(richiesta) {
   const numReso = placeholder(richiesta.num_reso);
   const cldmPad10 = richiesta.cldm
@@ -262,7 +265,7 @@ export function buildResoAutorizzazioneText(richiesta) {
   const ddtData = placeholder(richiesta.ddt_data);
   const numColli = placeholder(richiesta.num_colli);
   const lineeFrase = fraseLinee(richiesta.linee);
-  const motivoFrase = fraseMotivo(richiesta.motivo_reso, richiesta.note);
+  const motivoFrase = fraseMotivo(richiesta.motivo_reso, richiesta.note, richiesta.motivo_altro);
 
   return [
     `Autorizzazione al reso n. ${numReso} merce da ritirare in nome e per conto di ABC Italia`,
@@ -285,39 +288,9 @@ export function buildResoAutorizzazioneText(richiesta) {
   ].join('\n');
 }
 
-// --- PDF (pdfkit, A4) ---
-// Restituisce un Buffer. Stesso testo del corpo, con header in alto.
-export function buildResoAutorizzazionePdf(richiesta) {
-  return new Promise((resolve, reject) => {
-    try {
-      const numReso = placeholder(richiesta.num_reso);
-      const doc = new PDFDocument({ size: 'A4', margin: 56 });
-      const chunks = [];
-      doc.on('data', (c) => chunks.push(c));
-      doc.on('error', reject);
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-
-      // Header
-      doc.font('Helvetica-Bold').fontSize(13)
-        .text(`ABC Italia — Autorizzazione al reso n. ${numReso}`, { align: 'left' });
-      doc.moveDown(1.5);
-
-      // Corpo
-      doc.font('Helvetica').fontSize(11);
-      const corpo = buildResoAutorizzazioneText(richiesta);
-      // riga vuota come paragrafo: pdfkit gestisce '\n' dentro .text con lineBreak
-      doc.text(corpo, { lineGap: 2 });
-
-      doc.end();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-// --- Invio email (testo + PDF allegato) ---
+// --- Invio email (testo + HTML, senza allegati) ---
 // richiesta: riga di richieste_reso (con num_reso, cldm, pv_*, ddt_*, num_colli,
-// linee [JSON], motivo_reso, note). Fire-and-forget per il caller.
+// linee [JSON], motivo_reso, motivo_altro, note). Fire-and-forget per il caller.
 //
 // Disattivabile via env RESI_AUTORIZZAZIONE_EMAIL_ON=0 (default: attivo quando
 // SMTP e' configurato). Se SMTP non configurato → skip silente (non blocca).
@@ -343,19 +316,8 @@ export async function sendResoAutorizzazioneEmail(richiesta) {
   const subject = `Autorizzazione al reso n. ${numReso} — ${pvNome}`;
   const text = buildResoAutorizzazioneText(richiesta);
 
-  let pdfBuf;
-  try {
-    pdfBuf = await buildResoAutorizzazionePdf(richiesta);
-  } catch (err) {
-    logger.error(`[RESI-EMAIL] Generazione PDF fallita reso n. ${numReso}: ${err.message}`);
-    // Procedi comunque senza allegato? No: l'utente vuole testo + PDF.
-    // Se il PDF fallisce, non inviare un'email incompleta: segnala e torna.
-    return { ok: false, error: `pdf_failed: ${err.message}` };
-  }
-
   const recipients = getRecipients();
   const toAddr = testMode ? TEST_OVERRIDE_EMAIL : recipients.join(', ');
-  const filename = `Autorizzazione_reso_${numReso}.pdf`;
 
   const mailOpts = {
     from: getSmtpFrom(),
@@ -363,9 +325,6 @@ export async function sendResoAutorizzazioneEmail(richiesta) {
     subject: testMode ? `[TEST → ${recipients.join(', ')}] ${subject}` : subject,
     text,
     html: buildResoAutorizzazioneHtml(richiesta),
-    attachments: [
-      { filename, content: pdfBuf, contentType: 'application/pdf' },
-    ],
   };
 
   try {
@@ -375,7 +334,7 @@ export async function sendResoAutorizzazioneEmail(richiesta) {
     } else {
       logger.info(`[RESI-EMAIL] Autorizzazione reso n. ${numReso} inviata a ${recipients.join(', ')} — ${info.messageId}`);
     }
-    return { ok: true, messageId: info.messageId, pdfAttached: true };
+    return { ok: true, messageId: info.messageId };
   } catch (err) {
     logger.error(`[RESI-EMAIL] Invio email autorizzazione reso n. ${numReso} fallito: ${err.message}`);
     return { ok: false, error: err.message };
