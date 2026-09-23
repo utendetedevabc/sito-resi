@@ -16,6 +16,9 @@ interface Richiesta {
   motivo_reso: string;
   stato: string;
   note: string | null;
+  // 2026-09-22 P3: pill corriere visibile in lista (SELECT estesa lato server).
+  corriere: string | null;
+  corriere_nome: string | null;
   created_at: string;
   richiedente_nome: string;
   richiedente_azienda: string;
@@ -142,8 +145,17 @@ export default function VenditoreRichiestePage() {
                         <span className="block text-xs text-gray-400">{r.richiedente_nome} — {r.richiedente_azienda}</span>
                       </span>
                     </span>
-                    <span className="text-xs font-medium text-orange-400 bg-orange-500/10 border border-orange-500/20 px-2 py-1 rounded-full">
-                      In attesa
+                    {/* 2026-09-22 P3: pill corriere sempre visibile in riga
+                        (testo, non solo colore; slate-300 su gray-800 ≥ 4.5:1). */}
+                    <span className="flex flex-col items-end gap-1.5 shrink-0">
+                      <span className="text-xs font-medium text-orange-400 bg-orange-500/10 border border-orange-500/20 px-2 py-1 rounded-full">
+                        In attesa
+                      </span>
+                      {r.corriere && (
+                        <span className="text-xs font-medium text-slate-300 bg-slate-500/10 border border-slate-500/20 px-2 py-1 rounded-full">
+                          {r.corriere === 'ALTRI' ? (r.corriere_nome || 'ALTRI') : r.corriere}
+                        </span>
+                      )}
                     </span>
                   </button>
 

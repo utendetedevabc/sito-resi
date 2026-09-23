@@ -236,7 +236,7 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
                   type="number"
                   inputMode="numeric"
                   min={1}
-                  max={9999}
+                  max={100000}
                   required
                   value={l.numero_pezzi}
                   // 2026-09-16 P5: nessun fallback silente a 1 — il campo vuoto
@@ -247,7 +247,7 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
                   aria-describedby={`l-pezzi-hint-${i}`}
                 />
                 <p id={`l-pezzi-hint-${i}`} className="text-xs text-gray-500 mt-1">
-                  Pezzi di questa linea
+                  Pezzi di questa linea (massimo 100.000)
                 </p>
               </div>
             </div>

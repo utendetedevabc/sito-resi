@@ -10,6 +10,9 @@ interface Richiesta {
   numero_ordine_esterno: string;
   motivo_reso: string;
   stato: string;
+  // 2026-09-22 P3: colonna Corriere (l'API admin restituisce già r.*).
+  corriere?: string | null;
+  corriere_nome?: string | null;
   richiedente_nome: string;
   venditore_nome?: string | null;
   created_at: string;
@@ -53,6 +56,8 @@ export default function AdminRichiestePage() {
     { key: 'richiedente_nome', header: 'Richiedente' },
     { key: 'venditore_nome', header: 'Venditore', render: (row: Richiesta) => row.venditore_nome || '-' },
     { key: 'motivo_reso', header: 'Motivo' },
+    // 2026-09-22 P3: corriere subito individuabile anche in admin (testo, non solo colore).
+    { key: 'corriere', header: 'Corriere', render: (row: Richiesta) => row.corriere === 'ALTRI' ? (row.corriere_nome || 'ALTRI') : (row.corriere || '-') },
     { key: 'stato', header: 'Stato', render: (row: Richiesta) => <StatusBadge stato={row.stato} /> },
     { key: 'created_at', header: 'Data', render: (row: Richiesta) => new Date(row.created_at).toLocaleDateString('it-IT') },
   ];

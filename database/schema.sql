@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS richieste_reso (
   user_id INTEGER NOT NULL REFERENCES users(id),
   numero_ordine_esterno TEXT NOT NULL,
   bda_hash TEXT,                        -- SHA-256 del BDA
-  motivo_reso TEXT NOT NULL CHECK(motivo_reso IN ('difettoso','errato','non_conforme','altro')),
+  motivo_reso TEXT NOT NULL CHECK(motivo_reso IN ('difettoso','errato','non_conforme','residuo_promo','altro')),
   note TEXT,
   prodotti TEXT,                        -- JSON array (modello vecchio, nullable)
   stato TEXT NOT NULL DEFAULT 'in_attesa'

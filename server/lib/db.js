@@ -82,7 +82,7 @@ addColumnIfMissing('richieste_reso', 'bda_autorizzazione', 'TEXT');
 // Nuovo modello reso (linee + corriere + PV manuale + num_reso sequenziale).
 // Le colonne vecchie restano per backward compat con resi gia' inseriti.
 addColumnIfMissing('richieste_reso', 'linee', 'TEXT');            // JSON [{nome}]
-addColumnIfMissing('richieste_reso', 'corriere', 'TEXT');         // GLS/NIEDDU/TRAMES/PARENA/ALTRI
+addColumnIfMissing('richieste_reso', 'corriere', 'TEXT');         // GLS/NIEDDU/TRAMES/PARENA/PROMOTORE/ALTRI
 addColumnIfMissing('richieste_reso', 'corriere_nome', 'TEXT');    // nome libero se corriere=ALTRI
 addColumnIfMissing('richieste_reso', 'pv_nome', 'TEXT');          // ragione sociale PV (manuale)
 addColumnIfMissing('richieste_reso', 'pv_indirizzo', 'TEXT');
@@ -102,6 +102,41 @@ addColumnIfMissing('richieste_reso', 'data_spedizione', 'TEXT');
 // sul reso alla creazione (lookupPvByCldm) e usati dal filtro venditore.js.
 addColumnIfMissing('richieste_reso', 'resp_codice', 'TEXT');
 addColumnIfMissing('richieste_reso', 'resp_nome', 'TEXT');
+// 2026-09-22 P1 ("Residuo promo autorizzato da sede"): il CHECK storico su
+// motivo_reso ammetteva solo 4 valori — 'residuo_promo' passava la validazione
+// zod ma veniva rifiutato dal DB (CHECK constraint failed). SQLite non puo'
+// ALTERare un CHECK: rebuild della tabella (stessa DDL con enum esteso, le
+// righe copiate 1:1) + ricreazione indici. Idempotente: parte solo se il CHECK
+// vecchio e' ancora presente nella DDL effettiva del DB.
+try {
+  const master = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'richieste_reso'`).get();
+  if (master?.sql && master.sql.includes('CHECK(motivo_reso IN') && !master.sql.includes('residuo_promo')) {
+    const newSql = master.sql
+      .replace('CREATE TABLE "richieste_reso"', 'CREATE TABLE "richieste_reso_new"')
+      .replace("'non_conforme','altro'", "'non_conforme','residuo_promo','altro'");
+    // uploads/allegati referenziano richieste_reso(id): FK OFF per il DROP del
+    // parent (le righe non cambiano, l'integrita' resta garantita dalla copia).
+    // Il pragma va impostato FUORI dalla transazione (dentro e' un no-op).
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(newSql);
+      db.exec('INSERT INTO richieste_reso_new SELECT * FROM richieste_reso');
+      db.exec('DROP TABLE richieste_reso');
+      db.exec('ALTER TABLE richieste_reso_new RENAME TO richieste_reso');
+      // Gli indici sulla tabella cadono col DROP: ricreati tutti (idempotenti).
+      db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_user ON richieste_reso(user_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_stato ON richieste_reso(stato)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_venditore ON richieste_reso(venditore_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_uuid ON richieste_reso(uuid)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_num_reso ON richieste_reso(num_reso)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_richieste_reso_resp_codice ON richieste_reso(resp_codice)');
+    })();
+    db.pragma('foreign_keys = ON');
+    console.error('[db] Migrazione motivo_reso completata: CHECK esteso con residuo_promo');
+  }
+} catch (err) {
+  console.error('[db] Errore migrazione CHECK motivo_reso:', err.message);
+}
 // F10: tabella anagrafica PV interna (importata da ZSD127.xlsx). Idempotente.
 try {
   db.exec(`CREATE TABLE IF NOT EXISTS anagrafica_pv (

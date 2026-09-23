@@ -55,7 +55,7 @@ router.get('/richieste', (req, res) => {
   const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
 
   const dataStmt = db.prepare(
-    `SELECT r.id, r.uuid, r.numero_ordine_esterno, r.motivo_reso, r.stato, r.note, r.created_at,
+    `SELECT r.id, r.uuid, r.numero_ordine_esterno, r.motivo_reso, r.stato, r.note, r.corriere, r.corriere_nome, r.created_at,
             u.nome as richiedente_nome, u.azienda as richiedente_azienda
      FROM richieste_reso r
      JOIN users u ON r.user_id = u.id

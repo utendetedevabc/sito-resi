@@ -4,12 +4,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import db from '../lib/db.js';
 import logger from '../lib/logger.js';
-import { csResoSchema, exportResiSchema, batchCsSchema } from './validation.js';
+import { csResoSchema, exportResiSchema, batchCsSchema, statsExportSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
 import { sendWebhook } from './webhook.js';
 import { buildResiXls, pvDbAvailable } from '../lib/xls-export.js';
+import { buildStatsXlsx } from '../lib/stats-export.js';
 import { sendResoAutorizzazioneEmail } from '../lib/resi-email.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -342,6 +343,72 @@ router.post('/richieste/ristampa-xls', (req, res) => {
   } catch (err) {
     logger.error(`Errore ristampa XLS: ${err.message}`);
     res.status(500).json({ error: 'Errore generazione file corriere', detail: err.message });
+  }
+});
+
+// POST /api/customer-service/richieste/export-statistiche — estrazione massiva
+// dei resi per le statistiche INTERNE (2026-09-22, richieste operatori: NON e'
+// il file per il corriere). Body: i filtri della ricerca (cldm / num_reso /
+// data_da / data_a su data_approvazione), tutti opzionali.
+//   - SENZA filtro di stato/tab: copre TUTTI i resi che rispettano i filtri,
+//     con colonna Stato (la vista di provenienza non conta).
+//   - Nessun cambio di stato, nessuna scrittura su disco: solo download.
+//   - Cap difensivo 5000 righe (dump completo dell'intero DB con un click e'
+//     un rischio di timeout/ODM, non un caso d'uso statistico reale).
+router.post('/richieste/export-statistiche', (req, res) => {
+  const parsed = statsExportSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
+  }
+  const { cldm, num_reso, data_da, data_a } = parsed.data;
+
+  // Stessa clausola WHERE della ricerca del GET /richieste (parametrizzata),
+  // senza la condizione di stato della tab.
+  const conds = [];
+  const params = [];
+  if (cldm) {
+    conds.push('r.cldm LIKE ?');
+    params.push(`%${cldm}%`);
+  }
+  if (num_reso !== undefined) {
+    conds.push('r.num_reso = ?');
+    params.push(num_reso);
+  }
+  if (data_da) {
+    conds.push('date(r.data_approvazione) >= date(?)');
+    params.push(data_da);
+  }
+  if (data_a) {
+    conds.push('date(r.data_approvazione) <= date(?)');
+    params.push(data_a);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+
+  const resi = db.prepare(
+    `SELECT r.*, u.nome as richiedente_nome, u.azienda as richiedente_azienda,
+            v.nome as venditore_nome
+     FROM richieste_reso r
+     JOIN users u ON r.user_id = u.id
+     LEFT JOIN users v ON r.venditore_id = v.id
+     ${where}
+     ORDER BY r.created_at ASC
+     LIMIT 5000`
+  ).all(...params);
+
+  if (resi.length === 0) {
+    return res.status(404).json({ error: 'Nessun reso trovato con i filtri indicati' });
+  }
+
+  try {
+    const { buf, filename } = buildStatsXlsx(resi);
+    logger.info(`Export statistiche: ${resi.length} resi da CS ${req.user.id}`);
+    logAudit(req.user.id, 'RESI_EXPORT_STATISTICHE', { count: resi.length, filtri: { cldm: cldm || null, num_reso: num_reso ?? null, data_da: data_da || null, data_a: data_a || null } }, req);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(Buffer.from(buf));
+  } catch (err) {
+    logger.error(`Errore export statistiche: ${err.message}`);
+    res.status(500).json({ error: 'Errore generazione file statistiche', detail: err.message });
   }
 });
 

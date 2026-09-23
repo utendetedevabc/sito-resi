@@ -115,6 +115,8 @@ const MOTIVO_RESO_LABEL = {
   difettoso: 'difettoso',
   errato: 'errato',
   non_conforme: 'non conforme',
+  // 2026-09-22 P1: nuova causale richiesta dagli operatori.
+  residuo_promo: 'residuo promo autorizzato da sede',
   altro: 'ALTRO',
 };
 

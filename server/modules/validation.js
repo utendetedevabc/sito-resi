@@ -28,7 +28,8 @@ const DDT_DATA_REGEX = /^(0[1-9]|[12]\d|3[01])\/(0[1-9]|1[0-2])\/\d{4}$/;
 export const creaResoSchema = z.object({
   numero_ordine: z.string().regex(ORDINE_REGEX, 'Formato ordine non valido').transform(sanitize).optional().nullable(),
   bda: z.string().regex(BDA_REGEX, 'BDA deve contenere solo numeri').optional().nullable(),
-  motivo_reso: z.enum(['difettoso', 'errato', 'non_conforme', 'altro']),
+  // 2026-09-22 P1: residuo_promo = "Residuo promo autorizzato da sede"
+  motivo_reso: z.enum(['difettoso', 'errato', 'non_conforme', 'residuo_promo', 'altro']),
   // 2026-09-16: motivazione manuale, obbligatoria solo quando motivo_reso='altro'
   // (il refine in fondo allo schema la richiede). Non sanificata qui: lo e'.
   motivo_altro: z.string().min(3).max(500).transform(s => sanitize(s).substring(0, 500)).optional(),
@@ -47,15 +48,18 @@ export const creaResoSchema = z.object({
   prodotti: z.array(z.object({
     codice: z.string().min(1).max(50).transform(sanitize),
     descrizione: z.string().min(1).max(500).transform(sanitize),
-    quantita: z.number().int().min(1).max(9999),
+    quantita: z.number().int().min(1).max(100000),
     condizioni: z.enum(['integro', 'danneggiato', 'aperto', 'usato']),
   })).max(100).optional(),
   linee: z.array(z.object({
     nome: z.string().min(1).max(100).transform(sanitize),
-    numero_pezzi: z.number().int().min(1).max(9999),
+    // 2026-09-22 P6: richieste operatori, massimo pezzi per linea 100.000
+    numero_pezzi: z.number().int().min(1).max(100000),
   })).min(1).max(100),
-  // Corriere: uno tra GLS/NIEDDU/TRAMES/PARENA/ALTRI. Se ALTRI, corriere_nome obbligatorio.
-  corriere: z.enum(['GLS', 'NIEDDU', 'TRAMES', 'PARENA', 'ALTRI']),
+  // Corriere: uno tra GLS/NIEDDU/TRAMES/PARENA/PROMOTORE/ALTRI. Se ALTRI,
+  // corriere_nome obbligatorio. 2026-09-22 P2: PROMOTORE = "Ritirato da
+  // promotore" (nessun corriere esterno, non richiede corriere_nome).
+  corriere: z.enum(['GLS', 'NIEDDU', 'TRAMES', 'PARENA', 'PROMOTORE', 'ALTRI']),
   corriere_nome: z.string().max(100).transform(sanitize).optional().nullable(),
   // Punto vendita: opzionali perche' il server li deriva dal cldm via anagrafica_pv.
   pv_nome: z.string().min(1).max(255).transform(sanitize).optional().nullable(),
@@ -98,6 +102,18 @@ export const batchCsSchema = z.object({
   uuids: z.array(z.string().uuid()).min(1).max(500),
   stato: z.enum(['approvato', 'rifiutato']),
   note: z.string().max(2000).transform(s => sanitize(s).substring(0, 2000)).optional(),
+});
+
+// 2026-09-22 P4: estrazione massiva resi per le statistiche (uso interno, NON
+// per il corriere) — POST /api/customer-service/richieste/export-statistiche.
+// Stessi filtri della ricerca della lista CS (cldm / num_reso / range date su
+// data_approvazione), applicati SENZA filtro di stato/tab: l'export copre
+// tutti i resi che rispettano i filtri, con colonna stato.
+export const statsExportSchema = z.object({
+  cldm: z.string().max(20).transform(sanitize).optional(),
+  num_reso: z.number().int().min(1).max(1000000).optional(),
+  data_da: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)').optional(),
+  data_a: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)').optional(),
 });
 
 export const createUserSchema = z.object({

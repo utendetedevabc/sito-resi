@@ -8,7 +8,7 @@ import EmptyState from '@/components/ui/EmptyState';
 import Pagination from '@/components/ui/Pagination';
 import ConfirmSheet from '@/components/ui/ConfirmSheet';
 import { useToast } from '@/components/ui/Toast';
-import { CheckCircleIcon, XCircleIcon, ChevronDownIcon, ChevronUpIcon, ArrowRightIcon, DocumentArrowDownIcon, PaperAirplaneIcon, PrinterIcon } from '@heroicons/react/24/outline';
+import { CheckCircleIcon, XCircleIcon, ChevronDownIcon, ChevronUpIcon, ArrowRightIcon, DocumentArrowDownIcon, PaperAirplaneIcon, PrinterIcon, ChartBarIcon } from '@heroicons/react/24/outline';
 
 interface Richiesta {
   id: number;
@@ -32,6 +32,7 @@ interface Richiesta {
   num_reso?: number | null;
   data_spedizione?: string | null;
   corriere?: string | null;
+  corriere_nome?: string | null;
 }
 
 type Vista = 'da_approvare' | 'approvati' | 'inviati';
@@ -85,6 +86,8 @@ export default function CSRRichiestePage() {
   const [batchConfirm, setBatchConfirm] = useState<{ tipo: 'approvato' | 'rifiutato' } | null>(null);
   const [batchSaving, setBatchSaving] = useState(false);
   const [ristampando, setRistampando] = useState(false);
+  // Estrazione statistiche (2026-09-22 P4): XLSX 2 fogli con i filtri correnti.
+  const [statsExporting, setStatsExporting] = useState(false);
 
   // Live region persistente
   const [msg, setMsg] = useState('');
@@ -350,6 +353,53 @@ export default function CSRRichiestePage() {
     }
   }
 
+  // 2026-09-22 P4: estrazione massiva per le STATISTICHE interne. POST
+  // /richieste/export-statistiche con i filtri APPLICATI (non la selezione, non
+  // il tab): XLSX 2 fogli (Resi + Dettaglio linee), tutti gli stati. Uso
+  // interno — il file non va al corriere.
+  async function onExportStatistiche() {
+    setStatsExporting(true);
+    setMsg('Generazione estrazione statistiche in corso…');
+    try {
+      const token = localStorage.getItem('access_token');
+      const body: Record<string, string | number> = {};
+      if (applied?.cldm.trim()) body.cldm = applied.cldm.trim();
+      const n = parseInt(applied?.num_reso || '', 10);
+      if (!Number.isNaN(n)) body.num_reso = n;
+      if (applied?.data_da) body.data_da = applied.data_da;
+      if (applied?.data_a) body.data_a = applied.data_a;
+      const res = await fetch(`/api/customer-service/richieste/export-statistiche`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || 'Errore estrazione');
+      }
+      const disp = res.headers.get('Content-Disposition') || '';
+      const m = disp.match(/filename="?([^"]+)"?/i);
+      const filename = m ? m[1] : 'Statistiche_resi.xlsx';
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      addToast('success', `Statistiche scaricate: ${filename}`);
+      setMsg(`Estrazione statistiche scaricata (${filename}).`);
+    } catch (err: unknown) {
+      const m = (err as Error).message || 'Errore estrazione statistiche';
+      addToast('error', m);
+      setMsg(`Estrazione statistiche fallita: ${m}`);
+    } finally {
+      setStatsExporting(false);
+    }
+  }
+
   async function handleAzione(uuid: string, tipo: 'approvato' | 'rifiutato') {
     if (!azione || azione.uuid !== uuid) {
       setAzione({ uuid, tipo, note: '' });
@@ -447,12 +497,28 @@ export default function CSRRichiestePage() {
                   />
                 </div>
               </div>
-              <div className="flex gap-2 mt-3">
-                <button type="submit" className="flex-1 h-11 bg-blue-600 text-white font-medium rounded-xl active:bg-blue-700 transition-colors">
+              <div className="flex flex-wrap gap-2 mt-3">
+                <button type="submit" className="flex-1 min-w-[120px] h-11 bg-blue-600 text-white font-medium rounded-xl active:bg-blue-700 transition-colors">
                   Cerca
                 </button>
                 <button type="reset" onClick={onSearchReset} className="h-11 px-4 bg-gray-700 text-gray-200 font-medium rounded-xl active:bg-gray-600 transition-colors">
                   Reset
+                </button>
+                {/* 2026-09-22 P4: estrazione statistiche con i filtri applicati. */}
+                <button
+                  type="button"
+                  onClick={onExportStatistiche}
+                  disabled={statsExporting}
+                  aria-busy={statsExporting}
+                  aria-label="Esporta statistiche di tutti i resi che rispettano i filtri di ricerca applicati"
+                  className="inline-flex items-center justify-center gap-1.5 h-11 px-4 bg-gray-700 text-gray-200 font-medium rounded-xl active:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {statsExporting ? (
+                    <span className="w-5 h-5 border-2 border-gray-200 border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+                  ) : (
+                    <ChartBarIcon className="w-5 h-5" aria-hidden="true" />
+                  )}
+                  Statistiche
                 </button>
               </div>
             </fieldset>
@@ -618,15 +684,25 @@ export default function CSRRichiestePage() {
                           <span className="block text-xs text-gray-400">{r.richiedente_nome} — {r.richiedente_azienda}</span>
                         </span>
                       </span>
-                      {vista === 'da_approvare' ? (
-                        <span className="text-xs font-medium text-orange-400 bg-orange-500/10 border border-orange-500/20 px-2 py-1 rounded-full">
-                          In revisione
-                        </span>
-                      ) : badge ? (
-                        <span className={`text-xs font-medium px-2 py-1 rounded-full border ${badge.cls}`}>
-                          {badge.label}
-                        </span>
-                      ) : null}
+                      {/* 2026-09-22 P3: pill corriere sempre visibile in riga,
+                          l'operatore lo individua senza espandere. Testo (non
+                          solo colore, WCAG 1.4.1); slate-300 su gray-800 ≥ 4.5:1. */}
+                      <span className="flex flex-col items-end gap-1.5 shrink-0">
+                        {vista === 'da_approvare' ? (
+                          <span className="text-xs font-medium text-orange-400 bg-orange-500/10 border border-orange-500/20 px-2 py-1 rounded-full">
+                            In revisione
+                          </span>
+                        ) : badge ? (
+                          <span className={`text-xs font-medium px-2 py-1 rounded-full border ${badge.cls}`}>
+                            {badge.label}
+                          </span>
+                        ) : null}
+                        {r.corriere && (
+                          <span className="text-xs font-medium text-slate-300 bg-slate-500/10 border border-slate-500/20 px-2 py-1 rounded-full">
+                            {r.corriere === 'ALTRI' ? (r.corriere_nome || 'ALTRI') : r.corriere}
+                          </span>
+                        )}
+                      </span>
                     </button>
                   </div>
 

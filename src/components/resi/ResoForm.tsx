@@ -516,6 +516,8 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
           <option value="difettoso">Prodotto difettoso</option>
           <option value="errato">Prodotto errato</option>
           <option value="non_conforme">Non conforme alla descrizione</option>
+          {/* 2026-09-22 P1: nuova causale richiesta dagli operatori */}
+          <option value="residuo_promo">Residuo promo autorizzato da sede</option>
           <option value="altro">Altro</option>
         </select>
       </div>
@@ -594,6 +596,8 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
             <option value="NIEDDU">NIEDDU</option>
             <option value="TRAMES">TRAMES</option>
             <option value="PARENA">PARENA</option>
+            {/* 2026-09-22 P2: ritiro a mano del promotore, no corriere_nome richiesto */}
+            <option value="PROMOTORE">Ritirato da promotore</option>
             <option value="ALTRI">ALTRI</option>
           </select>
         </div>
