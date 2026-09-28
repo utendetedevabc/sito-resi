@@ -12,10 +12,33 @@ export const ZSD127_PATH = process.env.ZSD127_PATH
   || '/mnt/bolle-scan-data/Servizi/InformazioniI Generali/anagrafica_siti_rares/ZSD127.xlsx';
 
 // Indici colonna nel foglio ZSD127 (header riga 1, dati da riga 2):
+// A=0 clit_cod (gruppo PV, header "Client facturé") | B=1 clit_nome (header "CLIFRS")
 // U=20 cldm | V=21 nome | W=22 indirizzo | X=23 citta | Y=24 cap | Z=25 prov
 // AA=26 regione | AL=37 resp_cod | AM=38 resp_nome | AN=39 promo_cod | AO=40 promo_nome
 // AS=44 linee (dash-separate)
-const COL = { cldm: 20, nome: 21, indirizzo: 22, citta: 23, cap: 24, prov: 25, regione: 26, respCod: 37, respNome: 38, promoCod: 39, promoNome: 40, linee: 44 };
+const COL = { clitCod: 0, clitNome: 1, cldm: 20, nome: 21, indirizzo: 22, citta: 23, cap: 24, prov: 25, regione: 26, respCod: 37, respNome: 38, promoCod: 39, promoNome: 40, linee: 44 };
+
+// 2026-09-28 P3: backfill dei gruppi clit sui resi storici (denormalizzazione
+// pv_clit_codice/pv_clit_nome in richieste_reso). Idempotente: tocca solo le
+// righe ancora NULL. Eseguito sia al boot (server/lib/db.js) sia qui, a fine
+// import: al primo avvio dopo il deploy l'import esteso non è ancora girato e
+// il backfill al boot popolerebbe 0 righe — ripeterlo qui chiude il ciclo
+// boot→import→backfill. Resi con cldm non in anagrafica restano NULL.
+export function backfillPvClit() {
+  try {
+    const info = db.prepare(
+      `UPDATE richieste_reso SET
+         pv_clit_codice = a.clit_codice, pv_clit_nome = a.clit_nome
+       FROM anagrafica_pv a
+       WHERE richieste_reso.cldm = a.cldm AND richieste_reso.pv_clit_codice IS NULL`
+    ).run();
+    if (info.changes > 0) logger.info(`[Anagrafica] Backfill gruppi clit: ${info.changes} resi aggiornati`);
+    return info.changes;
+  } catch (err) {
+    logger.error(`[Anagrafica] Errore backfill pv_clit: ${err.message}`);
+    return 0;
+  }
+}
 
 // Estrae il nome (senza telefono) da "NOME COGNOME 3351234567".
 function parseNomePersona(raw) {
@@ -42,9 +65,10 @@ export function refreshAnagrafica() {
   const now = new Date().toISOString();
 
   const upsert = db.prepare(
-    `INSERT INTO anagrafica_pv (cldm, nome, indirizzo, citta, cap, provincia, regione, resp_codice, resp_nome, promo_codice, promo_nome, linee, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `INSERT INTO anagrafica_pv (cldm, clit_codice, clit_nome, nome, indirizzo, citta, cap, provincia, regione, resp_codice, resp_nome, promo_codice, promo_nome, linee, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(cldm) DO UPDATE SET
+       clit_codice=excluded.clit_codice, clit_nome=excluded.clit_nome,
        nome=excluded.nome, indirizzo=excluded.indirizzo, citta=excluded.citta, cap=excluded.cap,
        provincia=excluded.provincia, regione=excluded.regione,
        resp_codice=excluded.resp_codice, resp_nome=excluded.resp_nome,
@@ -67,6 +91,8 @@ export function refreshAnagrafica() {
     if (!cldm || !/^\d+$/.test(cldm)) continue; // CLDM numerico obbligatorio
     items.push([
       cldm,
+      cell(r, COL.clitCod),
+      cell(r, COL.clitNome),
       cell(r, COL.nome),
       cell(r, COL.indirizzo),
       cell(r, COL.citta),
@@ -82,6 +108,8 @@ export function refreshAnagrafica() {
     ]);
   }
   tx(items);
+  // 2026-09-28 P3: dopo l'import, backfill dei gruppi sui resi storici.
+  backfillPvClit();
   const total = db.prepare('SELECT COUNT(*) as c FROM anagrafica_pv').get().c;
   logger.info(`[Anagrafica] Importati ${items.length} record (tabella totale: ${total}) da ${ZSD127_PATH}`);
   return { imported: inserted, updated, total, source: ZSD127_PATH, source_exists: true };
@@ -104,8 +132,9 @@ export function searchPv(q, limit = 20) {
   return db.prepare(
     `SELECT cldm, nome, citta, provincia FROM anagrafica_pv
      WHERE cldm LIKE ? OR nome LIKE ? COLLATE NOCASE
+       OR clit_nome LIKE ? COLLATE NOCASE
      ORDER BY LENGTH(cldm) ASC, nome ASC LIMIT ?`
-  ).all(like, like, Math.min(parseInt(limit) || 20, 100));
+  ).all(like, like, like, Math.min(parseInt(limit) || 20, 100));
 }
 
 export function anagraficaStatus() {

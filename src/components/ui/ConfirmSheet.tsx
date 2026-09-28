@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 
 interface ConfirmSheetProps {
@@ -24,13 +24,24 @@ export default function ConfirmSheet({
   onConfirm,
   onCancel,
 }: ConfirmSheetProps) {
+  // 2026-09-28 P1 (a11y, pattern modal-specialist): alla apertura il focus va
+  // sul bottone ANNULLA (azione meno distruttiva) — non su Conferma. Premere
+  // Invio senza leggere non deve mai eseguire l'azione irreversibile.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
     };
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    // Il focus arriva DOPO il paint del dialog (il return null sopra non
+    // lascia il bottone nel DOM prima dell'apertura).
+    const raf = requestAnimationFrame(() => cancelRef.current?.focus());
+    return () => {
+      window.removeEventListener('keydown', handler);
+      cancelAnimationFrame(raf);
+    };
   }, [open, onCancel]);
 
   if (!open) return null;
@@ -59,6 +70,7 @@ export default function ConfirmSheet({
           </button>
 
           <button
+            ref={cancelRef}
             onClick={onCancel}
             className="text-gray-500 text-sm active:text-gray-300 transition-colors min-h-[48px] min-w-[48px]"
           >

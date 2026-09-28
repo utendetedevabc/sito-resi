@@ -19,6 +19,8 @@ export const AZIONI: Record<string, { label: string; cls: string }> = {
   RESO_CREATO:            { label: 'Reso creato',              cls: 'text-blue-300 bg-blue-500/10 border-blue-500/20' },
   RESO_MODIFICATO:        { label: 'Reso modificato',          cls: 'text-slate-300 bg-slate-500/10 border-slate-500/20' },
   RESO_ANNULLATO:         { label: 'Reso annullato',          cls: 'text-gray-300 bg-gray-500/10 border-gray-500/20' },
+  // 2026-09-28 P1: annullamento CS di un reso approvato ma non spedito
+  RESO_ANNULLATO_CS:      { label: 'Reso annullato (CS)',     cls: 'text-gray-300 bg-gray-500/10 border-gray-500/20' },
   RESO_APPROVATO_1:       { label: 'Approvato (1° livello)',   cls: 'text-green-300 bg-green-500/10 border-green-500/20' },
   RESO_RIFIUTATO_1:       { label: 'Rifiutato (1° livello)',   cls: 'text-red-300 bg-red-500/10 border-red-500/20' },
   RESO_APPROVATO_FINALE:  { label: 'Approvato finale',         cls: 'text-green-300 bg-green-600/20 border-green-600/30' },

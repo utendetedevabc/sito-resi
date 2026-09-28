@@ -73,7 +73,11 @@ CREATE TABLE IF NOT EXISTS richieste_reso (
   num_reso INTEGER,                      -- identificativo sequenziale 1..1.000.000
   -- F11: routing per responsabile. Popolati alla creazione da lookupPvByCldm(cldm).
   resp_codice TEXT,                      -- codice responsabile (anagrafica_pv.resp_codice)
-  resp_nome TEXT                         -- nome responsabile (anagrafica_pv.resp_nome)
+  resp_nome TEXT,                        -- nome responsabile (anagrafica_pv.resp_nome)
+  -- 2026-09-28 P3: gruppo PV (clit, ZSD127). Denormalizzato come resp_* alla
+  -- creazione (lookupPvByCldm) + backfill su resi storici. Base della ricerca "clit".
+  pv_clit_codice TEXT,                   -- codice gruppo (anagrafica_pv.clit_codice, col A)
+  pv_clit_nome TEXT                     -- nome gruppo (anagrafica_pv.clit_nome, col B)
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -148,6 +152,8 @@ CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
 -- Aggiornata settimanalmente (domenica 12:00) + refresh forzato.
 CREATE TABLE IF NOT EXISTS anagrafica_pv (
   cldm TEXT PRIMARY KEY,
+  clit_codice TEXT,    -- A: codice gruppo PV / ragione sociale ("Client facturé")
+  clit_nome TEXT,      -- B: nome gruppo PV ("CLIFRS", es. SEVEN SPA)
   nome TEXT,
   indirizzo TEXT,
   citta TEXT,

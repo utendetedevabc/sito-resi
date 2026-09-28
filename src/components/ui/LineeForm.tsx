@@ -15,12 +15,29 @@ interface Linea {
 // prende il testo digitato nell'input personalizzato.
 export const ALTRO_VALUE = '__ALTRO__';
 
+// 2026-09-28 P2: riga "COMPLESSIVO" = tutte le linee del PV insieme, totale
+// pezzi inserito una sola volta. A differenza di ALTRO_VALUE è un valore REALE
+// che va al server (passa zod, fluisce in email/stats). Mutualmente esclusivo
+// con le righe di singole linee (stats/email sommano le righe: mescolarle
+// conterrebbe i pezzi due volte) — enforced qui nell'UI e dal refine zod
+// server-side.
+export const COMPLESSIVO = 'COMPLESSIVO';
+
 interface Props {
   value: Linea[];
   onChange: (linee: Linea[]) => void;
   // F10: linee aperte del PV selezionato. Se assente/vuoto, si mostra
   // l'input testo libero (retrocompatibile con ResoForm pre-Task-8).
   lineeDisponibili?: string[];
+}
+
+// 2026-09-28 P2: una riga è in modalità "Altro…" (input free-text) solo se ha
+// un nome fuori dalle linee del PV E non è COMPLESSIVO — senza l'esclusione
+// esplicita la riga pre-selezionata COMPLESSIVO verrebbe catturata qui e
+// resa come input personalizzato.
+function isAltroLinea(l: Linea, lineeDisponibili?: string[]): boolean {
+  if (!lineeDisponibili || lineeDisponibili.length === 0) return false;
+  return !!l.nome && l.nome !== COMPLESSIVO && !lineeDisponibili.includes(l.nome);
 }
 
 // Form "inserimento linee": ogni riga ha nome della linea + numero pezzi.
@@ -39,10 +56,7 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
   // libero visibile sotto la select). Mantenuto in sync per indice con
   // `value`: add/remove modificano entrambi gli array nella stessa posizione.
   const [altre, setAltre] = useState<boolean[]>(() =>
-    value.map((l) => {
-      if (!lineeDisponibili || lineeDisponibili.length === 0) return false;
-      return !!l.nome && !lineeDisponibili.includes(l.nome);
-    })
+    value.map((l) => isAltroLinea(l, lineeDisponibili))
   );
 
   const hasLinee = !!(lineeDisponibili && lineeDisponibili.length > 0);
@@ -58,12 +72,7 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
   useEffect(() => {
     if (prevLineeKeyRef.current === lineeKey) return;
     prevLineeKeyRef.current = lineeKey;
-    setAltre(
-      value.map((l) => {
-        if (!lineeDisponibili || lineeDisponibili.length === 0) return false;
-        return !!l.nome && !lineeDisponibili.includes(l.nome);
-      })
-    );
+    setAltre(value.map((l) => isAltroLinea(l, lineeDisponibili)));
   }, [lineeKey]); // dipende solo dalla key di contenuto, NON da value
 
   function add() {
@@ -151,7 +160,7 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
                       value={
                         isAltro
                           ? ALTRO_VALUE
-                          : l.nome && lineeDisponibili!.includes(l.nome)
+                          : l.nome && (l.nome === COMPLESSIVO || lineeDisponibili!.includes(l.nome))
                           ? l.nome
                           : ''
                       }
@@ -161,6 +170,12 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
                       ref={isLast ? (el) => { newRowFieldRef.current = el; } : undefined}
                     >
                       <option value="">— Seleziona linea —</option>
+                      {/* 2026-09-28 P2: COMPLESSIVO offerta SOLO quando è l'unica
+                          riga — non può mai convivere con righe di singole linee
+                          (totali doppi in stats/email). */}
+                      {value.length === 1 && (
+                        <option value={COMPLESSIVO}>COMPLESSIVO — tutte le linee</option>
+                      )}
                       {lineeDisponibili!.map((ln) => (
                         <option key={ln} value={ln}>
                           {ln}
@@ -169,8 +184,9 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
                       <option value={ALTRO_VALUE}>Altro…</option>
                     </select>
                     <p id={`l-linea-hint-${i}`} className="text-xs text-gray-500 mt-1">
-                      Scegli una linea del punto vendita, oppure &quot;Altro…&quot; per
-                      inserirne una personalizzata
+                      Scegli &quot;COMPLESSIVO — tutte le linee&quot; per inserire i pezzi
+                      totali una sola volta, una linea del punto vendita, oppure
+                      &quot;Altro…&quot;
                     </p>
                     {isAltro && (
                       <div className="mt-3">
@@ -267,15 +283,22 @@ export default function LineeForm({ value, onChange, lineeDisponibili }: Props) 
         );
       })}
 
-      <button
-        type="button"
-        onClick={add}
-        ref={addBtnRef}
-        className="flex items-center justify-center gap-2 w-full min-h-[48px] bg-gray-800 text-gray-300 rounded-xl font-medium active:bg-gray-700 transition-colors border border-gray-700"
-      >
-        <PlusIcon className="w-5 h-5" aria-hidden="true" />
-        Aggiungi linea
-      </button>
+      {/* 2026-09-28 P2: niente bottone "Aggiungi linea" finché esiste una riga
+          COMPLESSIVO (mutual exclusion — l'option del resto appare solo con una
+          sola riga, quindi il bottone qui non deve offrire una via di fuga
+          dall'invariant). Il bottone NON è "disabled": sparisce del tutto, così
+          non resta un controllo inerte/incomprensibile (COGA, WCAG 2.4.4). */}
+      {!value.some((l) => l.nome === COMPLESSIVO) && (
+        <button
+          type="button"
+          onClick={add}
+          ref={addBtnRef}
+          className="flex items-center justify-center gap-2 w-full min-h-[48px] bg-gray-800 text-gray-300 rounded-xl font-medium active:bg-gray-700 transition-colors border border-gray-700"
+        >
+          <PlusIcon className="w-5 h-5" aria-hidden="true" />
+          Aggiungi linea
+        </button>
+      )}
     </div>
   );
 }

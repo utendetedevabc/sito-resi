@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import db from '../lib/db.js';
 import logger from '../lib/logger.js';
-import { csResoSchema, exportResiSchema, batchCsSchema, statsExportSchema } from './validation.js';
+import { csResoSchema, exportResiSchema, annullaResiSchema, batchCsSchema, statsExportSchema } from './validation.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { logAudit } from '../lib/audit.js';
@@ -105,6 +105,10 @@ function notificaApprovazioneReso(existing) {
 //   Tutti i parametri utente entrano in SQL parametrizzati (?), mai concatenati.
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const CLDM_SEARCH_RE = /^[A-Za-z0-9_\-]{1,20}$/;
+// 2026-09-28 P3: filtro gruppo PV (clit). Più permissivo di CLDM_SEARCH_RE
+// perché il nome del gruppo contiene spazi (es. "SEVEN SPA"); comunque niente
+// wildcard SQL (% _) né caratteri di controllo.
+const CLIT_SEARCH_RE = /^[A-Za-z0-9À-ÖØ-öø-ÿ' .\-]{1,60}$/;
 
 router.get('/richieste', (req, res) => {
   const { page = '1', per_page = '20', view = 'da_approvare' } = req.query;
@@ -131,7 +135,7 @@ router.get('/richieste', (req, res) => {
   // 2. Costruisce condizioni di search dinamicamente (sempre parametrizzate).
   const conds = [statoCond];
   const params = [];
-  const { cldm, num_reso, data_da, data_a } = req.query;
+  const { cldm, clit, num_reso, data_da, data_a } = req.query;
 
   if (cldm !== undefined && cldm !== '' && cldm !== null) {
     const c = String(cldm);
@@ -140,6 +144,15 @@ router.get('/richieste', (req, res) => {
     }
     conds.push('r.cldm LIKE ?');
     params.push(`%${c}%`);
+  }
+  // 2026-09-28 P3: ricerca per gruppo PV — codice (es. 1042) o nome (SEVEN).
+  if (clit !== undefined && clit !== '' && clit !== null) {
+    const g = String(clit).trim();
+    if (!CLIT_SEARCH_RE.test(g)) {
+      return res.status(400).json({ error: 'Parametro clit non valido' });
+    }
+    conds.push('(r.pv_clit_codice LIKE ? OR r.pv_clit_nome LIKE ? COLLATE NOCASE)');
+    params.push(`%${g}%`, `%${g}%`);
   }
   if (num_reso !== undefined && num_reso !== '' && num_reso !== null) {
     const n = Number.parseInt(num_reso, 10);
@@ -310,6 +323,56 @@ router.post('/richieste/azione-batch', (req, res) => {
   res.json({ success: true, stato, aggiornati: resi.length, uuids_saltati: uuidsSaltati });
 });
 
+// POST /api/customer-service/richieste/annulla — annullamento resi APPROVATI
+// ma NON spediti (2026-09-28 P1, richiesta operatori). Stesso shape dell'export:
+//   Body: { uuids: string[] } (1..500 uuid validi), per bottone per-riga e batch.
+//   - Stato soft 'annullato': il reso NON viene eliminato fisicamente, resta
+//     tracciato in storico/audit (e nella lista del richiedente, che lo vede
+//     con badge "Annullato").
+//   - Idempotente come l'export: solo i resi con stato='approvato' vengono
+//     toccati (la guard atomica nell'UPDATE skippa spediti/completati/
+//     rifiutati/annullati, restituiti solo come uuids_saltati).
+//   - NESSUN webhook ad ABC HUB e NESSUNA email di annullamento in questo
+//     pacchetto: il webhook parte all'approvazione e non esiste un evento di
+//     annullamento — ABC HUB resta notificato del reso (limite dichiarato
+//     all'operatore nella UI). Il reso esce dalla coda "Approvati" quindi NON
+//     finisce mai nel file corriere RITGIO*.xls nè nel GLS giornaliero.
+router.post('/richieste/annulla', (req, res) => {
+  const parsed = annullaResiSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
+  }
+  const { uuids } = parsed.data;
+
+  const placeholders = uuids.map(() => '?').join(',');
+  // Solo approvati: spediti/completati non sono più annullabili (già inviati).
+  const resi = db.prepare(
+    `SELECT uuid FROM richieste_reso WHERE uuid IN (${placeholders}) AND stato = 'approvato'`
+  ).all(...uuids);
+
+  if (resi.length === 0) {
+    return res.status(404).json({ error: 'Nessun reso approvato selezionato' });
+  }
+
+  const tx = db.transaction(() => {
+    for (const r of resi) {
+      db.prepare(
+        `UPDATE richieste_reso SET stato = 'annullato', updated_at = datetime('now')
+         WHERE uuid = ? AND stato = 'approvato'`
+      ).run(r.uuid);
+    }
+  });
+  tx();
+
+  const uuidsAggiornati = resi.map((r) => r.uuid);
+  const uuidsSaltati = uuids.filter((u) => !uuidsAggiornati.includes(u));
+
+  logger.info(`Annullamento CS: ${resi.length} resi approvati → annullato da CS ${req.user.id}`);
+  logAudit(req.user.id, 'RESO_ANNULLATO_CS', { count: resi.length, uuids: uuidsAggiornati }, req);
+
+  res.json({ success: true, aggiornati: resi.length, uuids_saltati: uuidsSaltati });
+});
+
 // POST /api/customer-service/richieste/ristampa-xls — ristampa del report XLS
 // multi-riga dei resi selezionati nella tab "Inviati" (2026-09-16 P4).
 //   Body: { uuids: string[] } (1..500 uuid validi, stesso schema dell'export).
@@ -360,7 +423,7 @@ router.post('/richieste/export-statistiche', (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: 'Dati non validi', issues: parsed.error.issues });
   }
-  const { cldm, num_reso, data_da, data_a } = parsed.data;
+  const { cldm, clit, num_reso, data_da, data_a } = parsed.data;
 
   // Stessa clausola WHERE della ricerca del GET /richieste (parametrizzata),
   // senza la condizione di stato della tab.
@@ -369,6 +432,11 @@ router.post('/richieste/export-statistiche', (req, res) => {
   if (cldm) {
     conds.push('r.cldm LIKE ?');
     params.push(`%${cldm}%`);
+  }
+  // 2026-09-28 P3: stesso filtro gruppo della ricerca (codice o nome clit).
+  if (clit) {
+    conds.push('(r.pv_clit_codice LIKE ? OR r.pv_clit_nome LIKE ? COLLATE NOCASE)');
+    params.push(`%${clit}%`, `%${clit}%`);
   }
   if (num_reso !== undefined) {
     conds.push('r.num_reso = ?');
@@ -402,7 +470,7 @@ router.post('/richieste/export-statistiche', (req, res) => {
   try {
     const { buf, filename } = buildStatsXlsx(resi);
     logger.info(`Export statistiche: ${resi.length} resi da CS ${req.user.id}`);
-    logAudit(req.user.id, 'RESI_EXPORT_STATISTICHE', { count: resi.length, filtri: { cldm: cldm || null, num_reso: num_reso ?? null, data_da: data_da || null, data_a: data_a || null } }, req);
+    logAudit(req.user.id, 'RESI_EXPORT_STATISTICHE', { count: resi.length, filtri: { cldm: cldm || null, clit: clit || null, num_reso: num_reso ?? null, data_da: data_da || null, data_a: data_a || null } }, req);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(Buffer.from(buf));
@@ -456,6 +524,9 @@ router.get('/gls/giornaliero', (req, res) => {
 // GET /api/customer-service/richieste/:uuid
 // Mostra il dettaglio sia dei resi in_revisione (da approvare) sia di quelli
 // già approvati/spediti/completati (read-only, per scaricare il file corriere).
+// 2026-09-28 P1: anche 'annullato' (dettaglio read-only con badge — i bottoni
+// azione lato UI restano condizionati dallo stato, il file corriere resta
+// vietato: 'annullato' NON è in STATI_EXPORTABILI).
 router.get('/richieste/:uuid', (req, res) => {
   const { uuid } = req.params;
 
@@ -465,7 +536,7 @@ router.get('/richieste/:uuid', (req, res) => {
      FROM richieste_reso r
      JOIN users u ON r.user_id = u.id
      LEFT JOIN users v ON r.venditore_id = v.id
-     WHERE r.uuid = ? AND r.stato IN ('in_revisione','approvato','spedito','completato')`
+     WHERE r.uuid = ? AND r.stato IN ('in_revisione','approvato','spedito','completato','annullato')`
   ).get(uuid);
 
   if (!richiesta) {

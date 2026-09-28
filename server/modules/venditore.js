@@ -20,12 +20,18 @@ function venditoreRoutingFilter(venditoreId) {
 
 const router = Router();
 
+// 2026-09-28 P3: filtro gruppo PV (clit). Come CS/admin: nome gruppo con spazi
+// ammessi (es. "SEVEN SPA"), mai wildcard SQL (% _) né caratteri di controllo.
+const CLIT_SEARCH_RE = /^[A-Za-z0-9À-ÖØ-öø-ÿ' .\-]{1,60}$/;
+
 router.use(authenticate);
 router.use(authorize('venditore'));
 
 // GET /api/venditore/richieste — tutti i resi in_attesa degli store
+// 2026-09-28 P3: filtro testuale `clit` (codice o nome del gruppo PV) oltre a
+// stato/date. Sempre parametrizzato, mai concatenato.
 router.get('/richieste', (req, res) => {
-  const { stato, data_da, data_a, page = '1', per_page = '20' } = req.query;
+  const { stato, data_da, data_a, clit, page = '1', per_page = '20' } = req.query;
   const { filter: respFilter } = venditoreRoutingFilter(req.user.id);
 
   let where = "WHERE r.stato = 'in_attesa' AND u.ruolo = 'store_account'";
@@ -37,6 +43,15 @@ router.get('/richieste', (req, res) => {
   } else {
     // backward-compat: nessuna assegnazione territoriale -> vede tutti gli in_attesa
     // (inclusi resi pre-F11 con resp_codice NULL)
+  }
+
+  if (clit !== undefined && clit !== '' && clit !== null) {
+    const g = String(clit).trim();
+    if (!CLIT_SEARCH_RE.test(g)) {
+      return res.status(400).json({ error: 'Parametro clit non valido' });
+    }
+    where += ' AND (r.pv_clit_codice LIKE ? OR r.pv_clit_nome LIKE ? COLLATE NOCASE)';
+    params.push(`%${g}%`, `%${g}%`);
   }
 
   if (data_da) {

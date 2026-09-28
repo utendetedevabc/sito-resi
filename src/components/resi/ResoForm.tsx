@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import CameraUpload from '@/components/ui/CameraUpload';
-import LineeForm from '@/components/ui/LineeForm';
+import LineeForm, { COMPLESSIVO } from '@/components/ui/LineeForm';
 import { useToast } from '@/components/ui/Toast';
 
 interface Linea {
@@ -271,6 +271,17 @@ export default function ResoForm({ redirectAfter, redirectToDetail, noteBanner }
       if (code !== cldmCorrenteRef.current) return; // stale
       setPv(data.pv);
       setLineePv(data.pv.linee || []);
+      // 2026-09-28 P2 (richiesta operatori): alla selezione del PV il form
+      // parte con UNA riga COMPLESSIVO pre-selezionata (pezzi totali inseriti
+      // una sola volta). Guard pristine: MAI sovrascrivere righe già compilate
+      // se l'utente cambia PV dopo aver scelto le linee — il default si applica
+      // solo quando le linee sono ancora vergini (una riga vuota).
+      setLinee((prev) => {
+        const pristine = prev.length === 1 && prev[0].nome === '' && prev[0].numero_pezzi === '';
+        return pristine && (data.pv.linee || []).length > 0
+          ? [{ nome: COMPLESSIVO, numero_pezzi: '' }]
+          : prev;
+      });
       setCldmError('');
       // Lookup OK: chiudi il fieldset manuale e ripulisci i dati inseriti.
       setPvNotFound(false);

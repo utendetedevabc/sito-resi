@@ -11,6 +11,10 @@ import { logAudit } from '../lib/audit.js';
 const router = Router();
 const PEPPER = process.env.PASSWORD_PEPPER || '';
 
+// 2026-09-28 P3: filtro gruppo PV (clit) per la ricerca admin. Come CS: nome
+// gruppo con spazi ammessi (es. "SEVEN SPA"), mai wildcard SQL (% _).
+const CLIT_SEARCH_RE = /^[A-Za-z0-9À-ÖØ-öø-ÿ' .\-]{1,60}$/;
+
 router.use(authenticate);
 router.use(authorize('admin'));
 
@@ -149,8 +153,10 @@ router.get('/agenti', (req, res) => {
 });
 
 // GET /api/admin/resi
+// 2026-09-28 P3: filtro testuale `clit` (codice o nome del gruppo PV) oltre a
+// stato/date/venditore. Sempre parametrizzato, mai concatenato.
 router.get('/resi', (req, res) => {
-  const { stato, data_da, data_a, venditore_id, page = '1', per_page = '20' } = req.query;
+  const { stato, data_da, data_a, venditore_id, clit, page = '1', per_page = '20' } = req.query;
 
   let where = 'WHERE 1=1';
   const params = [];
@@ -159,6 +165,14 @@ router.get('/resi', (req, res) => {
   if (data_da) { where += " AND date(r.created_at) >= date(?)"; params.push(data_da); }
   if (data_a) { where += " AND date(r.created_at) <= date(?)"; params.push(data_a); }
   if (venditore_id) { where += ' AND r.venditore_id = ?'; params.push(venditore_id); }
+  if (clit !== undefined && clit !== '' && clit !== null) {
+    const g = String(clit).trim();
+    if (!CLIT_SEARCH_RE.test(g)) {
+      return res.status(400).json({ error: 'Parametro clit non valido' });
+    }
+    where += ' AND (r.pv_clit_codice LIKE ? OR r.pv_clit_nome LIKE ? COLLATE NOCASE)';
+    params.push(`%${g}%`, `%${g}%`);
+  }
 
   const countStmt = db.prepare(`SELECT COUNT(*) as total FROM richieste_reso r ${where}`);
   const { total } = countStmt.get(...params);

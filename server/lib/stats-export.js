@@ -49,7 +49,7 @@ function corriereLabel(r) {
 // richieste_reso (con richiedente_nome/venditore_nome dal join della SELECT).
 export function buildStatsXlsx(rows) {
   const headers = [
-    'N. Reso', 'Numero ordine', 'Stato', 'CLDM', 'PV', 'Richiedente', 'Venditore',
+    'N. Reso', 'Numero ordine', 'Stato', 'CLDM', 'PV', 'Gruppo', 'Richiedente', 'Venditore',
     'Motivo', 'Motivazione Altro', 'Corriere', 'Colli', 'DDT Numero', 'DDT Data',
     'Linee', 'Totale pezzi', 'Data creazione', 'Data approvazione',
   ];
@@ -68,6 +68,9 @@ export function buildStatsXlsx(rows) {
       STATO_LABEL[r.stato] || r.stato || '',
       r.cldm || '',
       r.pv_nome || '',
+      // 2026-09-28 P3: gruppo PV (clit) — nome, o codice se il nome manca
+      // (resi pre-backfill con anagrafica parziale), '' se del tutto assente.
+      r.pv_clit_nome || r.pv_clit_codice || '',
       r.richiedente_nome || '',
       r.venditore_nome || '',
       MOTIVO_LABEL[r.motivo_reso] || r.motivo_reso || '',

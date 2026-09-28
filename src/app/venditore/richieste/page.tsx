@@ -41,28 +41,56 @@ export default function VenditoreRichiestePage() {
   // Live region persistente (annuncio cambio pagina a screen reader).
   const [msg, setMsg] = useState('');
 
-  const fetchData = useCallback(async (p: number) => {
+  // 2026-09-28 P3: ricerca per gruppo PV (clit — codice o nome, ZSD127).
+  // `sClit` è il campo del form, `clitApplied` il valore inviato all'API:
+  // la fetch parte SOLO al submit esplicito (pattern pagina CS).
+  const [sClit, setSClit] = useState('');
+  const [clitApplied, setClitApplied] = useState('');
+
+  const fetchData = useCallback(async (p: number, clit: string) => {
     setLoading(true);
     setError('');
+    setMsg('Ricerca in corso…');
     try {
       const token = localStorage.getItem('access_token');
-      const res = await fetch(`/api/venditore/richieste?page=${p}&per_page=${PER_PAGE}`, {
+      const params = new URLSearchParams();
+      params.set('page', String(p));
+      params.set('per_page', String(PER_PAGE));
+      if (clit.trim()) params.set('clit', clit.trim());
+      const res = await fetch(`/api/venditore/richieste?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('Errore caricamento');
       const json = await res.json();
       setData(json.data || []);
       setTotal(json.total || 0);
+      // Live region: conteggio risultati della ricerca (live-region-controller).
+      setMsg((json.data?.length || 0) > 0
+        ? `${json.total} richieste trovate`
+        : 'Nessuna richiesta trovata con questo gruppo');
     } catch {
       setError('Impossibile caricare le richieste.');
+      setMsg('');
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchData(page);
-  }, [fetchData, page]);
+    fetchData(page, clitApplied);
+  }, [fetchData, page, clitApplied]);
+
+  function onSearchSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setPage(1);
+    setClitApplied(sClit);
+  }
+
+  function onSearchReset() {
+    setSClit('');
+    setClitApplied('');
+    setPage(1);
+  }
 
   function onPageChange(p: number) {
     setExpanded(null);
@@ -88,7 +116,7 @@ export default function VenditoreRichiestePage() {
       if (!res.ok) throw new Error('Errore');
       addToast('success', tipo === 'approvato' ? 'Richiesta approvata (in revisione)' : 'Richiesta rifiutata');
       setAzione(null);
-      fetchData(page);
+      fetchData(page, clitApplied);
     } catch {
       addToast('error', 'Errore durante l\'operazione');
     } finally {
@@ -101,6 +129,29 @@ export default function VenditoreRichiestePage() {
       <MobileHeader title="Richieste da approvare" />
 
       <div className="pt-4">
+        {/* 2026-09-28 P3: ricerca per gruppo PV. Fieldset+legend+label htmlFor,
+            submit esplicito (Cerca) + reset; il conteggio arriva nella live
+            region sotto (pattern pagina CS). */}
+        <form onSubmit={onSearchSubmit} onReset={onSearchReset} className="mb-4">
+          <fieldset className="bg-gray-800 rounded-2xl border border-gray-700 p-4">
+            <legend className="px-2 text-sm font-medium text-gray-300">Ricerca richieste</legend>
+            <label htmlFor="src-clit" className="block text-xs font-medium text-gray-400 mb-1 mt-2">Gruppo (clit)</label>
+            <input
+              id="src-clit" name="clit" type="text" autoComplete="off"
+              value={sClit} onChange={(e) => setSClit(e.target.value)}
+              className="input-mobile" placeholder="es. 1042 o SEVEN"
+            />
+            <div className="flex flex-wrap gap-2 mt-3">
+              <button type="submit" className="flex-1 min-w-[120px] h-11 bg-blue-600 text-white font-medium rounded-xl active:bg-blue-700 transition-colors">
+                Cerca
+              </button>
+              <button type="reset" className="h-11 px-4 bg-gray-700 text-gray-200 font-medium rounded-xl active:bg-gray-600 transition-colors">
+                Reset
+              </button>
+            </div>
+          </fieldset>
+        </form>
+
         {/* Live region persistente (sempre in DOM, contenuto via stato). */}
         <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{msg}</div>
 

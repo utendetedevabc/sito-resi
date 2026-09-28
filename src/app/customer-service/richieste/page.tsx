@@ -49,7 +49,8 @@ const STATO_BADGE: Record<string, { label: string; cls: string }> = {
   completato: { label: 'Completato', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
 };
 
-interface SearchParams { cldm: string; num_reso: string; data_da: string; data_a: string; }
+// 2026-09-28 P3: `clit` = gruppo PV (codice o nome, ZSD127 col A/B).
+interface SearchParams { cldm: string; clit: string; num_reso: string; data_da: string; data_a: string; }
 
 export default function CSRRichiestePage() {
   const { addToast } = useToast();
@@ -70,6 +71,8 @@ export default function CSRRichiestePage() {
 
   // Ricerca
   const [sCldm, setSCldm] = useState('');
+  // 2026-09-28 P3: gruppo PV (codice es. 1042 o nome es. SEVEN)
+  const [sClit, setSClit] = useState('');
   const [sNumReso, setSNumReso] = useState('');
   const [sDataDa, setSDataDa] = useState('');
   const [sDataA, setSDataA] = useState('');
@@ -85,6 +88,10 @@ export default function CSRRichiestePage() {
   // N webhook + N email — conferma esplicita come per l'export singolo).
   const [batchConfirm, setBatchConfirm] = useState<{ tipo: 'approvato' | 'rifiutato' } | null>(null);
   const [batchSaving, setBatchSaving] = useState(false);
+  // 2026-09-28 P1: annullamento resi approvati ma NON spediti. Un solo
+  // ConfirmSheet per entrambe le vie (per-riga → [uuid], batch → selezione).
+  const [annullaConfirm, setAnnullaConfirm] = useState<string[] | null>(null);
+  const [annullaSaving, setAnnullaSaving] = useState(false);
   const [ristampando, setRistampando] = useState(false);
   // Estrazione statistiche (2026-09-22 P4): XLSX 2 fogli con i filtri correnti.
   const [statsExporting, setStatsExporting] = useState(false);
@@ -102,6 +109,7 @@ export default function CSRRichiestePage() {
     params.set('per_page', String(PER_PAGE));
     if (s) {
       if (s.cldm.trim()) params.set('cldm', s.cldm.trim());
+      if (s.clit.trim()) params.set('clit', s.clit.trim());
       if (s.num_reso.trim()) params.set('num_reso', s.num_reso.trim());
       if (s.data_da) params.set('data_da', s.data_da);
       if (s.data_a) params.set('data_a', s.data_a);
@@ -176,11 +184,12 @@ export default function CSRRichiestePage() {
   function onSearchSubmit(e: React.FormEvent) {
     e.preventDefault();
     setPage(1);
-    setApplied({ cldm: sCldm, num_reso: sNumReso, data_da: sDataDa, data_a: sDataA });
+    setApplied({ cldm: sCldm, clit: sClit, num_reso: sNumReso, data_da: sDataDa, data_a: sDataA });
   }
 
   function onSearchReset() {
     setSCldm('');
+    setSClit('');
     setSNumReso('');
     setSDataDa('');
     setSDataA('');
@@ -313,6 +322,43 @@ export default function CSRRichiestePage() {
     }
   }
 
+  // 2026-09-28 P1: annulla resi APPROVATI ma non spediti (per-riga o batch).
+  // POST /richieste/annulla → stato soft 'annullato' (il reso resta in storico
+  // e nella lista del richiedente con badge "Annullato"; NON finisce mai nel
+  // file corriere). ABC HUB NON viene avvisato (limite dichiarato nel confirm).
+  // Pattern di onBatchAzione: chiude il confirm PRIMA della fetch, live region,
+  // clear selezione, refresh del tab "Approvati", focus sul tab (WCAG 2.4.3).
+  async function onAnnulla(uuids: string[]) {
+    if (uuids.length === 0) return;
+    setAnnullaConfirm(null);
+    setAnnullaSaving(true);
+    setMsg(`Annullamento di ${uuids.length} res${uuids.length === 1 ? 'o' : 'i'} in corso…`);
+    try {
+      const token = localStorage.getItem('access_token');
+      const res = await fetch(`/api/customer-service/richieste/annulla`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ uuids }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'Errore annullamento');
+      const n = j.aggiornati ?? uuids.length;
+      addToast('success', `${n} res${n === 1 ? 'o annullato' : 'i annullati'}`);
+      setMsg(`${n} res${n === 1 ? 'o annullato' : 'i annullati'}.`);
+      setSelected(new Set());
+      await fetchData('approvati', applied, page);
+      // Focus management: i resi annullati lasciano "Approvati" (possibile
+      // lista/barra vuota). Focus sul tab sempre presente (WCAG 2.4.3).
+      requestAnimationFrame(() => tabRefs.current['approvati']?.focus());
+    } catch (err: unknown) {
+      const m = (err as Error).message || 'Errore annullamento';
+      addToast('error', m);
+      setMsg(`Annullamento fallito: ${m}`);
+    } finally {
+      setAnnullaSaving(false);
+    }
+  }
+
   // Ristampa report XLS multi-riga dei selezionati nella tab "Inviati"
   // (2026-09-16 P4): POST /richieste/ristampa-xls. Nessun cambio di stato.
   async function onRistampa() {
@@ -364,6 +410,7 @@ export default function CSRRichiestePage() {
       const token = localStorage.getItem('access_token');
       const body: Record<string, string | number> = {};
       if (applied?.cldm.trim()) body.cldm = applied.cldm.trim();
+      if (applied?.clit.trim()) body.clit = applied.clit.trim();
       const n = parseInt(applied?.num_reso || '', 10);
       if (!Number.isNaN(n)) body.num_reso = n;
       if (applied?.data_da) body.data_da = applied.data_da;
@@ -472,6 +519,15 @@ export default function CSRRichiestePage() {
                     className="input-mobile" placeholder="es. 520059"
                   />
                 </div>
+                {/* 2026-09-28 P3: ricerca per gruppo PV (clit, ragione sociale). */}
+                <div>
+                  <label htmlFor="src-clit" className="block text-xs font-medium text-gray-400 mb-1">Gruppo (clit)</label>
+                  <input
+                    id="src-clit" name="clit" type="text" autoComplete="off"
+                    value={sClit} onChange={(e) => setSClit(e.target.value)}
+                    className="input-mobile" placeholder="es. 1042 o SEVEN"
+                  />
+                </div>
                 <div>
                   <label htmlFor="src-numreso" className="block text-xs font-medium text-gray-400 mb-1">Num. reso</label>
                   <input
@@ -576,21 +632,36 @@ export default function CSRRichiestePage() {
                 )}
 
                 {vista === 'approvati' && (
-                  <button
-                    type="button"
-                    onClick={onExport}
-                    disabled={selected.size === 0 || exporting}
-                    aria-busy={exporting}
-                    aria-label={`Esporta e invia ${selected.size} resi selezionati al corriere`}
-                    className="ml-auto inline-flex items-center justify-center gap-2 h-11 px-4 bg-green-600 text-white font-medium rounded-xl active:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {exporting ? (
-                      <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
-                    ) : (
-                      <PaperAirplaneIcon className="w-5 h-5" aria-hidden="true" />
-                    )}
-                    Esporta e invia ({selected.size})
-                  </button>
+                  <div className="ml-auto flex gap-2">
+                    {/* 2026-09-28 P1: batch annullamento resi approvati non
+                        spediti (stesso stile del Rifiuta massivo, azione
+                        distruttiva con conferma esplicita). */}
+                    <button
+                      type="button"
+                      onClick={() => setAnnullaConfirm(Array.from(selected))}
+                      disabled={selected.size === 0 || annullaSaving}
+                      aria-label={`Annulla ${selected.size} resi selezionati`}
+                      className="inline-flex items-center justify-center gap-1.5 h-11 px-3 bg-red-900/30 text-red-300 font-medium rounded-xl border border-red-800 active:bg-red-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <XCircleIcon className="w-5 h-5" aria-hidden="true" />
+                      Annulla ({selected.size})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onExport}
+                      disabled={selected.size === 0 || exporting}
+                      aria-busy={exporting}
+                      aria-label={`Esporta e invia ${selected.size} resi selezionati al corriere`}
+                      className="inline-flex items-center justify-center gap-2 h-11 px-4 bg-green-600 text-white font-medium rounded-xl active:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {exporting ? (
+                        <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+                      ) : (
+                        <PaperAirplaneIcon className="w-5 h-5" aria-hidden="true" />
+                      )}
+                      Esporta e invia ({selected.size})
+                    </button>
+                  </div>
                 )}
 
                 {vista === 'inviati' && (
@@ -770,21 +841,39 @@ export default function CSRRichiestePage() {
                           </button>
                         </div>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => downloadXls(r.uuid)}
-                          disabled={downloadingUuid === r.uuid}
-                          aria-busy={downloadingUuid === r.uuid}
-                          aria-label={`Scarica file corriere RITGIO del reso ${r.num_reso ?? r.numero_ordine_esterno}`}
-                          className="w-full h-12 flex items-center justify-center gap-2 bg-blue-600 text-white font-medium rounded-xl active:bg-blue-700 transition-colors disabled:opacity-60"
-                        >
-                          {downloadingUuid === r.uuid ? (
-                            <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
-                          ) : (
-                            <DocumentArrowDownIcon className="w-5 h-5" aria-hidden="true" />
+                        <div className="space-y-2">
+                          <button
+                            type="button"
+                            onClick={() => downloadXls(r.uuid)}
+                            disabled={downloadingUuid === r.uuid}
+                            aria-busy={downloadingUuid === r.uuid}
+                            aria-label={`Scarica file corriere RITGIO del reso ${r.num_reso ?? r.numero_ordine_esterno}`}
+                            className="w-full h-12 flex items-center justify-center gap-2 bg-blue-600 text-white font-medium rounded-xl active:bg-blue-700 transition-colors disabled:opacity-60"
+                          >
+                            {downloadingUuid === r.uuid ? (
+                              <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+                            ) : (
+                              <DocumentArrowDownIcon className="w-5 h-5" aria-hidden="true" />
+                            )}
+                            Scarica file corriere (RITGIO*.xls)
+                          </button>
+                          {/* 2026-09-28 P1: annulla reso singolo — SOLO tab
+                              "Approvati" (in "Inviati" il reso è già partito,
+                              non più annullabile). Azione distruttiva →
+                              ConfirmSheet danger. */}
+                          {vista === 'approvati' && (
+                            <button
+                              type="button"
+                              onClick={() => setAnnullaConfirm([r.uuid])}
+                              disabled={annullaSaving}
+                              aria-label={`Annulla reso n. ${r.num_reso ?? r.numero_ordine_esterno}`}
+                              className="w-full h-12 flex items-center justify-center gap-2 bg-red-900/30 text-red-300 font-medium rounded-xl border border-red-800 active:bg-red-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <XCircleIcon className="w-5 h-5" aria-hidden="true" />
+                              Annulla reso
+                            </button>
                           )}
-                          Scarica file corriere (RITGIO*.xls)
-                        </button>
+                        </div>
                       )}
                       {vista === 'da_approvare' && (
                         <p className="mt-2 text-[11px] text-gray-500">
@@ -823,6 +912,19 @@ export default function CSRRichiestePage() {
         variant={batchConfirm?.tipo === 'approvato' ? 'primary' : 'danger'}
         onConfirm={() => batchConfirm && onBatchAzione(batchConfirm.tipo)}
         onCancel={() => setBatchConfirm(null)}
+      />
+
+      {/* 2026-09-28 P1: conferma annullamento resi approvati. Il messaggio
+          dichiara il limite: ABC HUB resta notificato (il webhook parte
+          all'approvazione, non esiste un evento di annullamento). */}
+      <ConfirmSheet
+        open={annullaConfirm !== null}
+        title="Annullamento resi"
+        message={`Confermi l'annullamento di ${annullaConfirm?.length ?? 0} res${(annullaConfirm?.length ?? 0) === 1 ? 'o' : 'i'}? Il reso non verrà spedito e uscirà dalla coda degli approvati, restando visibile nello storico. ABC HUB non verrà avvisato.`}
+        confirmText={`Annulla ${annullaConfirm?.length ?? 0} res${(annullaConfirm?.length ?? 0) === 1 ? 'o' : 'i'}`}
+        variant="danger"
+        onConfirm={() => annullaConfirm && onAnnulla(annullaConfirm)}
+        onCancel={() => setAnnullaConfirm(null)}
       />
     </div>
   );

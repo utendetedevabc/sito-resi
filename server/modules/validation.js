@@ -22,6 +22,10 @@ export const loginSchema = z.object({
 
 // CLDM punto vendita: alfanumerico (es. 503990, TIGULLIO)
 const CLDM_REGEX = /^[A-Za-z0-9_\-]{2,20}$/;
+// 2026-09-28 P3: ricerca per clit (gruppo PV, ZSD127 col A codice / col B nome).
+// Più permissiva di CLDM_SEARCH_RE perché il nome gruppo contiene spazi
+// (es. "SEVEN SPA"); comunque niente wildcard SQL (% _) né caratteri di controllo.
+const CLIT_REGEX = /^[A-Za-z0-9À-ÖØ-öø-ÿ' .\-]{1,60}$/;
 // Data DDT: DD/MM/YYYY
 const DDT_DATA_REGEX = /^(0[1-9]|[12]\d|3[01])\/(0[1-9]|1[0-2])\/\d{4}$/;
 
@@ -76,6 +80,17 @@ export const creaResoSchema = z.object({
   // prima il campo non esisteva e il PV non poteva spiegare il motivo).
   (d) => d.motivo_reso !== 'altro' || (typeof d.motivo_altro === 'string' && d.motivo_altro.trim().length >= 3),
   { message: 'Se il motivo è Altro, indica la motivazione', path: ['motivo_altro'] }
+).refine(
+  // 2026-09-28 P2: la riga COMPLESSIVO (tutte le linee del PV insieme, totale
+  // pezzi inserito una sola volta) non può convivere con righe di singole
+  // linee — stats/email sommano numero_pezzi di tutte le righe e il totale
+  // risulterebbe doppio. Lato UI la mutual exclusion è già forzata
+  // (LineeForm); questo refine è la difesa per client non-UI.
+  (d) => {
+    const nomi = (d.linee || []).map((l) => l.nome);
+    return !nomi.includes('COMPLESSIVO') || nomi.length === 1;
+  },
+  { message: 'La riga COMPLESSIVO non può essere combinata con altre linee', path: ['linee'] }
 );
 
 export const approvaResoSchema = z.object({
@@ -95,6 +110,13 @@ export const exportResiSchema = z.object({
   uuids: z.array(z.string().uuid()).min(1).max(500),
 });
 
+// 2026-09-28 P1: annullamento resi approvati ma NON spediti (azione CS,
+// per-riga o batch). Stesso shape dell'export: i resi non più in stato
+// 'approvato' vengono saltati lato server (guard atomica nel UPDATE).
+export const annullaResiSchema = z.object({
+  uuids: z.array(z.string().uuid()).min(1).max(500),
+});
+
 // 2026-09-16 P4: azione massiva CS sulla coda "Da gestire" (in_revisione) —
 // approvazione/rifiuto di piu' resi in un colpo. La nota (opzionale per scelta
 // utente) e' condivisa: viene scritta in note_venditori di tutti i selezionati.
@@ -111,6 +133,8 @@ export const batchCsSchema = z.object({
 // tutti i resi che rispettano i filtri, con colonna stato.
 export const statsExportSchema = z.object({
   cldm: z.string().max(20).transform(sanitize).optional(),
+  // 2026-09-28 P3: filtro gruppo PV (codice o nome clit)
+  clit: z.string().regex(CLIT_REGEX, 'Parametro clit non valido').transform(sanitize).optional(),
   num_reso: z.number().int().min(1).max(1000000).optional(),
   data_da: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)').optional(),
   data_a: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)').optional(),

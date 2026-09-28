@@ -102,6 +102,10 @@ addColumnIfMissing('richieste_reso', 'data_spedizione', 'TEXT');
 // sul reso alla creazione (lookupPvByCldm) e usati dal filtro venditore.js.
 addColumnIfMissing('richieste_reso', 'resp_codice', 'TEXT');
 addColumnIfMissing('richieste_reso', 'resp_nome', 'TEXT');
+// 2026-09-28 P3: gruppi PV (clit, ZSD127 col A/B) denormalizzati sul reso alla
+// creazione (lookupPvByCldm), come resp_*. Base del filtro di ricerca "clit".
+addColumnIfMissing('richieste_reso', 'pv_clit_codice', 'TEXT');
+addColumnIfMissing('richieste_reso', 'pv_clit_nome', 'TEXT');
 // 2026-09-22 P1 ("Residuo promo autorizzato da sede"): il CHECK storico su
 // motivo_reso ammetteva solo 4 valori — 'residuo_promo' passava la validazione
 // zod ma veniva rifiutato dal DB (CHECK constraint failed). SQLite non puo'
@@ -151,6 +155,25 @@ try {
   db.exec('CREATE INDEX IF NOT EXISTS idx_anagrafica_pv_nome ON anagrafica_pv(nome)');
 } catch (err) {
   console.error('Errore creazione anagrafica_pv:', err.message);
+}
+// 2026-09-28 P3: colonne gruppi PV (clit) su DB esistente — CREATE TABLE IF NOT
+// EXISTS non altera la tabella già presente.
+addColumnIfMissing('anagrafica_pv', 'clit_codice', 'TEXT');
+addColumnIfMissing('anagrafica_pv', 'clit_nome', 'TEXT');
+// 2026-09-28 P3: backfill idempotente dei gruppi clit sui resi storici.
+// Al primo avvio dopo il deploy l'import esteso non è ancora girato → 0 righe;
+// il backfill viene ripetuto a fine refreshAnagrafica (server/lib/anagrafica.js)
+// così il ciclo boot→import→backfill si chiude da solo.
+try {
+  const info = db.prepare(
+    `UPDATE richieste_reso SET
+       pv_clit_codice = a.clit_codice, pv_clit_nome = a.clit_nome
+     FROM anagrafica_pv a
+     WHERE richieste_reso.cldm = a.cldm AND richieste_reso.pv_clit_codice IS NULL`
+  ).run();
+  if (info.changes > 0) console.error(`[db] Backfill pv_clit: ${info.changes} resi aggiornati`);
+} catch (err) {
+  console.error('[db] Errore backfill pv_clit:', err.message);
 }
 // F11: anagrafica agenti interna (fonte per provisioning users). Importata da
 // anagrafica_agenti.xlsx (FUORI repo). password_hash = bcrypt+PEPPER, mai chiaro.

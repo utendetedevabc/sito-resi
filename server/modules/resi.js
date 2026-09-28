@@ -76,7 +76,8 @@ router.post('/', (req, res) => {
   // i pv_* vengono letti dal body (inseriti manualmente dall'utente) e
   // resp_codice/resp_nome restano NULL (nessun routing per responsabile).
   const pv = lookupPvByCldm(cldm);
-  let pvNome, pvIndirizzo, pvCitta, pvCap, pvProvincia, pvRegione, respCodice, respNome;
+  let pvNome, pvIndirizzo, pvCitta, pvCap, pvProvincia, pvRegione, respCodice, respNome,
+      pvClitCodice, pvClitNome;
   if (pv) {
     // Path felice: cldm in anagrafica — usa lookup (invariato).
     pvNome = pv.nome || null;
@@ -89,6 +90,10 @@ router.post('/', (req, res) => {
     // CS/venditore) — utile per audit/display e filtro venditore (in_attesa).
     respCodice = pv.resp_codice || null;
     respNome = pv.resp_nome || null;
+    // 2026-09-28 P3: gruppo PV (clit) denormalizzato come resp_* — base della
+    // ricerca per gruppo su CS/admin/venditore e della colonna Gruppo nelle stats.
+    pvClitCodice = pv.clit_codice || null;
+    pvClitNome = pv.clit_nome || null;
   } else {
     // Fallback PV manuale: cldm non in anagrafica. Richiede pv_* essenziali dal
     // body. pv_regione resta opzionale. resp_* NULL (nessun routing responsabile).
@@ -113,6 +118,8 @@ router.post('/', (req, res) => {
     pvRegione = pv_regione || null;
     respCodice = null;
     respNome = null;
+    pvClitCodice = null;
+    pvClitNome = null;
   }
 
   // Scadenza 30 giorni
@@ -147,8 +154,9 @@ router.post('/', (req, res) => {
       `INSERT INTO richieste_reso
        (uuid, user_id, numero_ordine_esterno, bda_hash, motivo_reso, motivo_altro, note, prodotti, data_scadenza, stato, data_approvazione,
         cldm, ddt_numero, ddt_data, num_colli, bda_autorizzazione,
-        linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, resp_codice, resp_nome, num_reso)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        linee, corriere, corriere_nome, pv_nome, pv_indirizzo, pv_citta, pv_cap, pv_provincia, pv_regione, resp_codice, resp_nome,
+        pv_clit_codice, pv_clit_nome, num_reso)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const info = stmt.run(
       uuid,
@@ -185,6 +193,8 @@ router.post('/', (req, res) => {
       pvRegione,
       respCodice,
       respNome,
+      pvClitCodice,
+      pvClitNome,
       numReso
     );
 
@@ -318,6 +328,8 @@ router.put('/:uuid', (req, res) => {
   // F11: resp_* seguono lo stesso pattern di pv_* (default null, valorizzati
   // dal lookup del PV quando cldm presente). Base per il filtro venditore.
   let respCodice = null, respNome = null;
+  // 2026-09-28 P3: gruppo clit stesso pattern (default null, dal lookup).
+  let pvClitCodice = null, pvClitNome = null;
   if (cldm) {
     const pv = lookupPvByCldm(cldm);
     if (pv) {
@@ -329,8 +341,10 @@ router.put('/:uuid', (req, res) => {
       pvRegione = pv.regione || pvRegione;
       respCodice = pv.resp_codice || null;
       respNome = pv.resp_nome || null;
+      pvClitCodice = pv.clit_codice || null;
+      pvClitNome = pv.clit_nome || null;
     }
-    // PV manuale fallback: pv_* dal body (già impostati sopra), resp_*=null.
+    // PV manuale fallback: pv_* dal body (già impostati sopra), resp_*/pv_clit_*=null.
   }
 
   try {
@@ -340,7 +354,8 @@ router.put('/:uuid', (req, res) => {
        cldm = ?, ddt_numero = ?, ddt_data = ?, num_colli = ?, bda_autorizzazione = ?,
        linee = ?, corriere = ?, corriere_nome = ?,
        pv_nome = ?, pv_indirizzo = ?, pv_citta = ?, pv_cap = ?, pv_provincia = ?, pv_regione = ?,
-       resp_codice = ?, resp_nome = ?
+       resp_codice = ?, resp_nome = ?,
+       pv_clit_codice = ?, pv_clit_nome = ?
        WHERE uuid = ?`
     ).run(
       // numero_ordine_esterno NOT NULL su DB esistenti: '' invece di undefined.
@@ -366,6 +381,8 @@ router.put('/:uuid', (req, res) => {
       pvRegione,
       respCodice,
       respNome,
+      pvClitCodice,
+      pvClitNome,
       uuid
     );
 
