@@ -11,18 +11,59 @@ import logger from './logger.js';
 export const ZSD127_PATH = process.env.ZSD127_PATH
   || '/mnt/bolle-scan-data/Servizi/InformazioniI Generali/anagrafica_siti_rares/ZSD127.xlsx';
 
-// Indici colonna nel foglio ZSD127 (header riga 1, dati da riga 2):
-// A=0 clit_cod (gruppo PV, header "Client facturé") | B=1 clit_nome (header "CLIFRS")
-// U=20 cldm | V=21 nome | W=22 indirizzo | X=23 citta | Y=24 cap | Z=25 prov
-// AA=26 regione | AL=37 resp_cod | AM=38 resp_nome | AN=39 promo_cod | AO=40 promo_nome
-// AW=48 linee (dash-separate). 19/10/2026: il file ZSD127 sulla share è
-// CAMBIATO di formato (7544→7585 righe, +4 colonne) e la colonna "linee"
-// si è spostata da AS=44 ad AW=48 (header letterale "linee"; AS=44 ora è
-// "Force de vente" — l'11/10 il refresh con 44 ha importato valori IMA/ILX
-// sbagliati). Verificato sul file reale: colonna con header "linee", valore
-// "SX" per cldm 500025. Tutti gli altri indici sopra ricontrollati il
-// 19/10/2026 e invariati.
-const COL = { clitCod: 0, clitNome: 1, cldm: 20, nome: 21, indirizzo: 22, citta: 23, cap: 24, prov: 25, regione: 26, respCod: 37, respNome: 38, promoCod: 39, promoNome: 40, linee: 48 };
+// Mappa campo → header atteso nella riga 1 del foglio ZSD127.
+// 19/10/2026: il file sulla share è CAMBIATO di formato senza preavviso
+// (7544→7585 righe, +4 colonne) e la colonna "linee" si è spostata da
+// AS=44 ad AW=48; il refresh domenicale con indice fisso ha importato per
+// TUTTI i PV i valori "Force de vente" (IMA/ILX) al posto delle linee
+// vere, senza nessun errore. Per questo l'import ora aggancia le colonne
+// per NOME HEADER (il file può spostarle quanto vuole) e "fallback" è solo
+// l'indice dell'ultima versione verificata, usato SOLO per il confronto.
+// Se un header non si trova → ABORT dell'import (dati esistenti intatti):
+// meglio anagrafica ferma ma corretta che fresca ma corrotta.
+const HEADER_MAP = {
+  clitCod: { header: 'Client facturé', fallback: 0 },     // A=0  gruppo PV (clit)
+  clitNome: { header: 'CLIFRS', fallback: 1 },           // B=1  nome gruppo
+  cldm: { header: 'Code client commandé', prefix: true, fallback: 20 }, // U=20
+  nome: { header: 'CLICRS', fallback: 21 },              // V=21
+  indirizzo: { header: 'CLICADR', fallback: 22 },        // W=22
+  citta: { header: 'CLICVIL', fallback: 23 },           // X=23
+  cap: { header: 'CLICCP', fallback: 24 },              // Y=24
+  prov: { header: 'CLICBD', fallback: 25 },              // Z=25
+  regione: { header: 'CLICREG', fallback: 26 },          // AA=26
+  respCod: { header: 'CLICRP2', fallback: 37 },          // AL=37
+  respNome: { header: 'CLICRP2N', fallback: 38 },       // AM=38
+  promoCod: { header: 'CLICRP1', fallback: 39 },         // AN=39
+  promoNome: { header: 'CLICRP1N', fallback: 40 },      // AO=40
+  linee: { header: 'linee', fallback: 48 },              // AW=48 (dash-separate)
+};
+
+// Risolve gli indici colonna dagli header reali del foglio. Ritorna
+// { col, warnings, missing }: `missing` elenca i campi il cui header non
+// esiste (in quel caso l'import va interrotto dal chiamante).
+function buildColMap(headerRow) {
+  const headers = (headerRow || []).map((h) =>
+    h == null ? '' : String(h).replace(/ /g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+  );
+  const col = {};
+  const warnings = [];
+  const missing = [];
+  for (const [k, spec] of Object.entries(HEADER_MAP)) {
+    const want = spec.header.toLowerCase();
+    const idx = spec.prefix
+      ? headers.findIndex((h) => h.startsWith(want))
+      : headers.indexOf(want);
+    if (idx < 0) {
+      missing.push(`${k} (header "${spec.header}")`);
+    } else {
+      if (idx !== spec.fallback) {
+        warnings.push(`${k}: header "${spec.header}" spostato a colonna ${idx} (attesa ${spec.fallback}) — file aggiornato`);
+      }
+      col[k] = idx;
+    }
+  }
+  return { col, warnings, missing };
+}
 
 // 2026-09-28 P3: backfill dei gruppi clit sui resi storici (denormalizzazione
 // pv_clit_codice/pv_clit_nome in richieste_reso). Idempotente: tocca solo le
@@ -70,6 +111,15 @@ export function refreshAnagrafica() {
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
   const now = new Date().toISOString();
 
+  // Aggancio colonne per NOME HEADER (robusto agli spostamenti di colonna).
+  const { col: COL, warnings, missing } = buildColMap(rows[0]);
+  for (const w of warnings) logger.warn(`[Anagrafica] ${w}`);
+  if (missing.length > 0) {
+    const total = db.prepare('SELECT COUNT(*) as c FROM anagrafica_pv').get().c;
+    logger.error(`[Anagrafica] ABORT import: header mancanti o irriconoscibili nel file → ${missing.join(', ')}. Mantengo i ${total} record esistenti.`);
+    return { imported: 0, updated: 0, total, source: ZSD127_PATH, source_exists: true, error: `Header mancanti: ${missing.join(', ')}` };
+  }
+
   const upsert = db.prepare(
     `INSERT INTO anagrafica_pv (cldm, clit_codice, clit_nome, nome, indirizzo, citta, cap, provincia, regione, resp_codice, resp_nome, promo_codice, promo_nome, linee, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -113,6 +163,15 @@ export function refreshAnagrafica() {
       now,
     ]);
   }
+  // Guardia anti-shift: se la colonna agganciata come cldm contiene pochi
+  // valori numerici, il file è irriconoscibile → ABORT (niente garbage).
+  const righeDati = Math.max(0, rows.length - 1);
+  if (righeDati > 0 && items.length < righeDati * 0.5) {
+    const total = db.prepare('SELECT COUNT(*) as c FROM anagrafica_pv').get().c;
+    logger.error(`[Anagrafica] ABORT import: solo ${items.length} cldm validi su ${righeDati} righe (colonna agganciata a ${COL.cldm}) — file cambiato oltre ogni riconoscimento. Mantengo i ${total} record esistenti.`);
+    return { imported: 0, updated: 0, total, source: ZSD127_PATH, source_exists: true, error: 'Colonna cldm non riconosciuta' };
+  }
+
   tx(items);
   // 2026-09-28 P3: dopo l'import, backfill dei gruppi sui resi storici.
   backfillPvClit();
