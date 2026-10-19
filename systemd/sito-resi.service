@@ -1,0 +1,23 @@
+[Unit]
+Description=Sito Resi ABC — produzione (:3003)
+After=network.target
+# Socket activation: la porta :3003 è tenuta aperta da sito-resi.socket;
+# nei riavvii (deploy) le connessioni si mettono in coda, il sito non
+# resta mai "irraggiungibile".
+Requires=sito-resi.socket
+After=sito-resi.socket
+
+[Service]
+Sockets=sito-resi.socket
+Type=simple
+WorkingDirectory=/home/adimn/Scrivania/sito_resi_ABC_hub/sito-resi
+Environment=DOTENV_CONFIG_PATH=.env.prod
+ExecStart=/usr/bin/node server.js
+# Tienilo in vita: se muore (crash o kill) riparte da solo dopo 3s.
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+# I log applicativi (winston) restano in logs/combined.log; qui cattura
+# stdout/stderr:  journalctl --user -u sito-resi -f
+[Install]
+WantedBy=default.target

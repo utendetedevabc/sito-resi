@@ -15,8 +15,14 @@ export const ZSD127_PATH = process.env.ZSD127_PATH
 // A=0 clit_cod (gruppo PV, header "Client facturé") | B=1 clit_nome (header "CLIFRS")
 // U=20 cldm | V=21 nome | W=22 indirizzo | X=23 citta | Y=24 cap | Z=25 prov
 // AA=26 regione | AL=37 resp_cod | AM=38 resp_nome | AN=39 promo_cod | AO=40 promo_nome
-// AS=44 linee (dash-separate)
-const COL = { clitCod: 0, clitNome: 1, cldm: 20, nome: 21, indirizzo: 22, citta: 23, cap: 24, prov: 25, regione: 26, respCod: 37, respNome: 38, promoCod: 39, promoNome: 40, linee: 44 };
+// AW=48 linee (dash-separate). 19/10/2026: il file ZSD127 sulla share è
+// CAMBIATO di formato (7544→7585 righe, +4 colonne) e la colonna "linee"
+// si è spostata da AS=44 ad AW=48 (header letterale "linee"; AS=44 ora è
+// "Force de vente" — l'11/10 il refresh con 44 ha importato valori IMA/ILX
+// sbagliati). Verificato sul file reale: colonna con header "linee", valore
+// "SX" per cldm 500025. Tutti gli altri indici sopra ricontrollati il
+// 19/10/2026 e invariati.
+const COL = { clitCod: 0, clitNome: 1, cldm: 20, nome: 21, indirizzo: 22, citta: 23, cap: 24, prov: 25, regione: 26, respCod: 37, respNome: 38, promoCod: 39, promoNome: 40, linee: 48 };
 
 // 2026-09-28 P3: backfill dei gruppi clit sui resi storici (denormalizzazione
 // pv_clit_codice/pv_clit_nome in richieste_reso). Idempotente: tocca solo le

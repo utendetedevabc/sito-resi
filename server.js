@@ -69,9 +69,20 @@ app.prepare().then(() => {
   // Next.js catch-all
   server.use((req, res) => handle(req, res));
 
-  const httpServer = server.listen(port, host, () => {
-    logger.info(`Sito Resi in ascolto su http://${host}:${port}`);
-  });
+  // Socket activation (systemd): se systemd passa il socket già in ascolto
+  // (fd 3, LISTEN_FDS/LISTEN_PID), lo riusiamo direttamente. La porta resta
+  // aperta TRA i riavvii: le connessioni mettono in coda invece di essere
+  // rifiutate → deploy senza "sito offline". Fallback host:port per avvio
+  // manuale (npm run dev / node server.js).
+  const systemdSocket = parseInt(process.env.LISTEN_FDS || '0', 10) >= 1
+    && parseInt(process.env.LISTEN_PID || '0', 10) === process.pid;
+  const httpServer = systemdSocket
+    ? server.listen({ fd: 3, backlog: 2048 }, () => {
+        logger.info(`Sito Resi in ascolto (socket systemd, porta ${port})`);
+      })
+    : server.listen(port, host, () => {
+        logger.info(`Sito Resi in ascolto su http://${host}:${port}`);
+      });
 
   // F10: scheduler anagrafica — refresh settimanale ogni domenica alle 12:00
   // (locale). Env ANAGRAFICA_AUTO_WEEKLY=1 (default) per abilitare.

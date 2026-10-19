@@ -1,0 +1,13 @@
+[Unit]
+Description=Sito Resi ABC — socket :3003 (sempre aperto tra i riavvii)
+
+[Socket]
+# Bind esplicito IPv4 wildcard, come faceva Node (HOST=0.0.0.0).
+ListenStream=0.0.0.0:3003
+# Coda delle connessioni durante un riavvio: generosa apposta.
+Backlog=1024
+# Nagle off (risposta HTTP più reattiva).
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
